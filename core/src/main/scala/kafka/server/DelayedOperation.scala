@@ -169,8 +169,10 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     }
   }
 
+  // WatcherList对象的数组，大小为DelayedOperationPurgatory.Shards-512
   private val watcherLists = Array.fill[WatcherList](DelayedOperationPurgatory.Shards)(new WatcherList)
   private def watcherList(key: Any): WatcherList = {
+    // key所在的watcherLists
     watcherLists(Math.abs(key.hashCode() % watcherLists.length))
   }
 
@@ -184,6 +186,9 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   newGauge("PurgatorySize", () => watched, metricsTags)
   newGauge("NumDelayedOperations", () => numDelayed, metricsTags)
 
+  /**
+   * 启动定时执行的线程
+   */
   if (reaperEnabled)
     expirationReaper.start()
 
@@ -232,12 +237,15 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     // any exclusive lock. Since DelayedOperationPurgatory.checkAndComplete() completes delayed operations asynchronously,
     // holding a exclusive lock to make the call is often unnecessary.
     if (operation.safeTryCompleteOrElse {
+      // 监听每个涉及的partition-key，
+      // 就是往key对应的Watchers新增这个操作
       watchKeys.foreach(key => watchForOperation(key, operation))
       if (watchKeys.nonEmpty) estimatedTotalOperations.incrementAndGet()
     }) return true
 
     // if it cannot be completed by now and hence is watched, add to the expire queue also
     if (!operation.isCompleted) {
+      // 把这个延时操作加入到timeoutTimer
       if (timerEnabled)
         timeoutTimer.add(operation)
       if (operation.isCompleted) {
@@ -257,7 +265,11 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
    */
   def checkAndComplete(key: Any): Int = {
     val wl = watcherList(key)
+    // 获取key的watchers
     val watchers = inLock(wl.watchersLock) { wl.watchersByKey.get(key) }
+    /**
+     * 遍历执行watchers的所有operation
+     */
     val numCompleted = if (watchers == null)
       0
     else
@@ -299,9 +311,12 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
    * grab the removeWatchersLock to avoid the operation being added to a removed watcher list
    */
   private def watchForOperation(key: Any, operation: T): Unit = {
+    // 获取key所在的WatcherList，位置 = key.hashCode%512（WatcherList数组的大小）
     val wl = watcherList(key)
     inLock(wl.watchersLock) {
+      // 如果WatcherList没有这个key,就新建并放入对应的Watchers
       val watcher = wl.watchersByKey.getAndMaybePut(key)
+      // 往这个key的Watchers的operations加入这个延时操作
       watcher.watch(operation)
     }
   }
@@ -359,6 +374,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
         if (curr.isCompleted) {
           // another thread has completed this operation, just remove it
           iter.remove()
+        // 执行每个Operation自己tryComplete()
         } else if (curr.safeTryComplete()) {
           iter.remove()
           completed += 1
@@ -429,7 +445,11 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     "ExpirationReaper-%d-%s".format(brokerId, purgatoryName),
     false) {
 
+    /**
+     * 循环执行
+     */
     override def doWork(): Unit = {
+      // 间隔200ms执行一次
       advanceClock(200L)
     }
   }

@@ -119,14 +119,24 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
   // to be defined in subclass to create a specific fetcher
   def createFetcherThread(fetcherId: Int, sourceBroker: BrokerEndPoint): T
 
+  // 针对一批分区创建fetcher线程
   def addFetcherForPartitions(partitionAndOffsets: Map[TopicPartition, InitialFetchState]): Unit = {
     lock synchronized {
+      // 每个fetcher线程对应一批分区
       val partitionsPerFetcher = partitionAndOffsets.groupBy { case (topicPartition, brokerAndInitialFetchOffset) =>
         BrokerAndFetcherId(brokerAndInitialFetchOffset.leader, getFetcherId(topicPartition))
       }
 
+
+      /**
+       * 创建fetcher
+       */
       def addAndStartFetcherThread(brokerAndFetcherId: BrokerAndFetcherId,
                                    brokerIdAndFetcherId: BrokerIdAndFetcherId): T = {
+        // 创建FetcherThread
+        /**
+         * @see kafka.server.ReplicaFetcherManager#createFetcherThread(int, kafka.cluster.BrokerEndPoint)
+         */
         val fetcherThread = createFetcherThread(brokerAndFetcherId.fetcherId, brokerAndFetcherId.broker)
         fetcherThreadMap.put(brokerIdAndFetcherId, fetcherThread)
         fetcherThread.start()
@@ -135,14 +145,17 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
 
       for ((brokerAndFetcherId, initialFetchOffsets) <- partitionsPerFetcher) {
         val brokerIdAndFetcherId = BrokerIdAndFetcherId(brokerAndFetcherId.broker.id, brokerAndFetcherId.fetcherId)
+        // 尝试获取fetcher，没有会进行创建
         val fetcherThread = fetcherThreadMap.get(brokerIdAndFetcherId) match {
           case Some(currentFetcherThread) if currentFetcherThread.sourceBroker == brokerAndFetcherId.broker =>
             // reuse the fetcher thread
             currentFetcherThread
           case Some(f) =>
             f.shutdown()
+            //创建fetcher
             addAndStartFetcherThread(brokerAndFetcherId, brokerIdAndFetcherId)
           case None =>
+            //创建fetcher
             addAndStartFetcherThread(brokerAndFetcherId, brokerIdAndFetcherId)
         }
 

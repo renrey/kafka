@@ -103,9 +103,14 @@ public final class ProducerBatch {
      * @return The RecordSend corresponding to this record or null if there isn't sufficient room.
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
+        // 没足够空间容纳Record
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
             return null;
+        // 有足够空间
         } else {
+            /**
+             * 写入ByteBuffer
+             */
             this.recordsBuilder.append(timestamp, key, value, headers);
             this.maxRecordSize = Math.max(this.maxRecordSize, AbstractRecords.estimateSizeInBytesUpperBound(magic(),
                     recordsBuilder.compressionType(), key, value, headers));
@@ -231,6 +236,9 @@ public final class ProducerBatch {
         }
 
         if (this.finalState.compareAndSet(null, tryFinalState)) {
+            /**
+             * 执行回调函数
+             */
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, recordExceptions);
             return true;
         }
@@ -261,6 +269,9 @@ public final class ProducerBatch {
         produceFuture.set(baseOffset, logAppendTime, recordExceptions);
 
         // execute callbacks
+        /**
+         * 执行已有的回调函数
+         */
         for (int i = 0; i < thunks.size(); i++) {
             try {
                 Thunk thunk = thunks.get(i);

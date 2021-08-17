@@ -56,6 +56,9 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     // Used to hold a reference to the underlying ByteBuffer so that we can write the record batch header and access
     // the written bytes. ByteBufferOutputStream allocates a new ByteBuffer if the existing one is not large enough,
     // so it's not safe to hold a direct reference to the underlying ByteBuffer.
+    /**
+     * 就是封装了传入的ByteBuffer
+     */
     private final ByteBufferOutputStream bufferStream;
     private final byte magic;
     private final int initialPosition;
@@ -129,9 +132,14 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.writeLimit = writeLimit;
         this.initialPosition = bufferStream.position();
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
-
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
+        /**
+         * 消息写入的流
+         * 主要利用ByteBuffer
+		 * wrapForOutput: 根据不同压缩类型，使用压缩流的DataOutputStream
+         * 如果使用压缩，写入时先写入压缩流的缓冲区，然后用压缩算法对消息压缩，再写入到ByteBufferStream
+         */
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
     }
 
@@ -280,6 +288,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     public void closeForRecordAppends() {
         if (appendStream != CLOSED_STREAM) {
             try {
+                // 关闭io流
                 appendStream.close();
             } catch (IOException e) {
                 throw new KafkaException(e);
@@ -419,8 +428,10 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             if (firstTimestamp == null)
                 firstTimestamp = timestamp;
 
+            // v2
             if (magic > RecordBatch.MAGIC_VALUE_V1) {
                 appendDefaultRecord(offset, timestamp, key, value, headers);
+            // v0\v1
             } else {
                 appendLegacyRecord(offset, timestamp, key, value, magic);
             }
@@ -693,11 +704,26 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         if (compressionType == CompressionType.NONE && timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
 
+        // record大小
         int size = LegacyRecord.recordSize(magic, key, value);
+        /**
+         *  写入offset、消息大小
+         */
         AbstractLegacyRecordBatch.writeHeader(appendStream, toInnerOffset(offset), size);
 
         if (timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
+        /**
+         * 写入消息
+         * 1. crc
+         * 2. magic
+         * 3. attributes
+         * 4. timestamp
+         * 5. key_size
+         * 6. key
+         * 7. value_size
+         * 8. value
+         */
         long crc = LegacyRecord.write(appendStream, magic, timestamp, key, value, CompressionType.NONE, timestampType);
         recordWritten(offset, timestamp, size + Records.LOG_OVERHEAD);
         return crc;
@@ -784,8 +810,13 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             return true;
 
         final int recordSize;
+        /**
+         * 计算消息大小
+          */
+        // v0、v1
         if (magic < RecordBatch.MAGIC_VALUE_V2) {
             recordSize = Records.LOG_OVERHEAD + LegacyRecord.recordSize(magic, key, value);
+        // v2
         } else {
             int nextOffsetDelta = lastOffset == null ? 0 : (int) (lastOffset - baseOffset + 1);
             long timestampDelta = firstTimestamp == null ? 0 : timestamp - firstTimestamp;
@@ -793,6 +824,9 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         }
 
         // Be conservative and not take compression of the new record into consideration.
+        /**
+         * 写入是否超出writeLimit
+         */
         return this.writeLimit >= estimatedBytesWritten() + recordSize;
     }
 

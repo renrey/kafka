@@ -113,8 +113,8 @@ public class KafkaChannel implements AutoCloseable {
         THROTTLE_ENDED
     }
 
-    private final String id;
-    private final TransportLayer transportLayer;
+    private final String id; // broker id
+    private final TransportLayer transportLayer; // 封装java nio对象：channel、 SelectionKey
     private final Supplier<Authenticator> authenticatorCreator;
     private Authenticator authenticator;
     // Tracks accumulated network thread time. This is updated on the network thread.
@@ -221,7 +221,14 @@ public class KafkaChannel implements AutoCloseable {
         if (socketChannel != null) {
             remoteAddress = socketChannel.getRemoteAddress();
         }
+        /**
+         * 完成java nio连接
+         * 更新java nio中channel关注的事件
+         */
         boolean connected = transportLayer.finishConnect();
+        /**
+         * 更新ChannelState
+         */
         if (connected) {
             if (ready()) {
                 state = ChannelState.READY;
@@ -379,13 +386,22 @@ public class KafkaChannel implements AutoCloseable {
     public void setSend(NetworkSend send) {
         if (this.send != null)
             throw new IllegalStateException("Attempt to begin a send operation with prior send operation still in progress, connection id is " + id);
+        // 保存send对象
         this.send = send;
+        // 监听WRITE事件
         this.transportLayer.addInterestOps(SelectionKey.OP_WRITE);
     }
 
     public NetworkSend maybeCompleteSend() {
+        /**
+         * 代表本次请求已经发送完
+         * send 中没有remaining 和 pending
+         */
         if (send != null && send.completed()) {
             midWrite = false;
+            /**
+             * 然后就不关注WRITE了，代表请求已完成发送
+             */
             transportLayer.removeInterestOps(SelectionKey.OP_WRITE);
             NetworkSend result = send;
             send = null;
@@ -399,6 +415,9 @@ public class KafkaChannel implements AutoCloseable {
             receive = new NetworkReceive(maxReceiveSize, id, memoryPool);
         }
 
+        /**
+         * 读取响应信息
+         */
         long bytesReceived = receive(this.receive);
 
         if (this.receive.requiredMemoryAmountKnown() && !this.receive.memoryAllocated() && isInMutableState()) {
@@ -413,7 +432,9 @@ public class KafkaChannel implements AutoCloseable {
     }
 
     public NetworkReceive maybeCompleteReceive() {
+        // complete：就是所有的分配ByteBuff都满了（size、buffer）
         if (receive != null && receive.complete()) {
+            // position重置0
             receive.payload().rewind();
             NetworkReceive result = receive;
             receive = null;
@@ -427,6 +448,9 @@ public class KafkaChannel implements AutoCloseable {
             return 0;
 
         midWrite = true;
+        /**
+         * 写入底层逻辑
+         */
         return send.writeTo(transportLayer);
     }
 
@@ -449,6 +473,7 @@ public class KafkaChannel implements AutoCloseable {
 
     private long receive(NetworkReceive receive) throws IOException {
         try {
+        	// 读取信息
             return receive.readFrom(transportLayer);
         } catch (SslAuthenticationException e) {
             // With TLSv1.3, post-handshake messages may throw SSLExceptions, which are

@@ -72,8 +72,8 @@ class Replica(val brokerId: Int, val topicPartition: TopicPartition) extends Log
       _lastCaughtUpTimeMs = math.max(_lastCaughtUpTimeMs, lastFetchTimeMs)
 
     _logStartOffset = followerStartOffset
-    _logEndOffsetMetadata = followerFetchOffsetMetadata
-    lastFetchLeaderLogEndOffset = leaderEndOffset
+    _logEndOffsetMetadata = followerFetchOffsetMetadata // LEO元数据
+    lastFetchLeaderLogEndOffset = leaderEndOffset //LEO
     lastFetchTimeMs = followerFetchTimeMs
   }
 

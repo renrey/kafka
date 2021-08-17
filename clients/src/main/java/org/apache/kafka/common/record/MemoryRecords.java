@@ -89,6 +89,7 @@ public class MemoryRecords extends AbstractRecords {
         int written = 0;
         while (written < sizeInBytes())
             written += channel.write(buffer);
+        // 把position复位到写入前的位置
         buffer.reset();
         return written;
     }

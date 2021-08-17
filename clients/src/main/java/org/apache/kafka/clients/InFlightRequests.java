@@ -99,6 +99,9 @@ final class InFlightRequests {
      */
     public boolean canSendMore(String node) {
         Deque<NetworkClient.InFlightRequest> queue = requests.get(node);
+        /**
+         * 注意：需要上一个batch已发送完成（可能有拆包的情况，需要完成这次请求才能发送下一个）
+         */
         return queue == null || queue.isEmpty() ||
                (queue.peekFirst().send.completed() && queue.size() < this.maxInFlightRequestsPerConnection);
     }

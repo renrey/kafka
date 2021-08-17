@@ -45,6 +45,7 @@ public class StickyPartitionCache {
 
     public int nextPartition(String topic, Cluster cluster, int prevPartition) {
         List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
+        // 上一次的
         Integer oldPart = indexCache.get(topic);
         Integer newPart = oldPart;
         // Check that the current sticky partition for the topic is either not set or that the partition that 
@@ -56,13 +57,18 @@ public class StickyPartitionCache {
                 newPart = random % partitions.size();
             } else if (availablePartitions.size() == 1) {
                 newPart = availablePartitions.get(0).partition();
+            // 正常多个分区
             } else {
                 while (newPart == null || newPart.equals(oldPart)) {
+                    // 下一个
                     int random = Utils.toPositive(ThreadLocalRandom.current().nextInt());
+                    // 计算新的
+                    // 随机数%分区数
                     newPart = availablePartitions.get(random % availablePartitions.size()).partition();
                 }
             }
             // Only change the sticky partition if it is null or prevPartition matches the current sticky partition.
+            // 更新选择的分区
             if (oldPart == null) {
                 indexCache.putIfAbsent(topic, newPart);
             } else {

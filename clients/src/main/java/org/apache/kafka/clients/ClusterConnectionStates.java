@@ -76,9 +76,11 @@ final class ClusterConnectionStates {
      */
     public boolean canConnect(String id, long now) {
         NodeConnectionState state = nodeState.get(id);
+        // 未建立过连接
         if (state == null)
             return true;
         else
+            // 连接中断（Disconnected）并且 上次重试时间超过reconnectBackoffMs
             return state.state.isDisconnected() &&
                    now - state.lastConnectAttemptMs >= state.reconnectBackoffMs;
     }
@@ -145,7 +147,7 @@ final class ClusterConnectionStates {
         NodeConnectionState connectionState = nodeState.get(id);
         if (connectionState != null && connectionState.host().equals(host)) {
             connectionState.lastConnectAttemptMs = now;
-            connectionState.state = ConnectionState.CONNECTING;
+            connectionState.state = ConnectionState.CONNECTING; // CONNECTING
             // Move to next resolved address, or if addresses are exhausted, mark node to be re-resolved
             connectionState.moveToNextAddress();
             connectingNodes.add(id);

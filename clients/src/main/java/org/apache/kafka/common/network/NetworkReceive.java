@@ -89,18 +89,40 @@ public class NetworkReceive implements Receive {
         return !size.hasRemaining() && buffer != null && !buffer.hasRemaining();
     }
 
+    /**
+     * 读取响应
+     * @param channel The channel to read from
+     * @return
+     * @throws IOException
+     */
     public long readFrom(ScatteringByteChannel channel) throws IOException {
         int read = 0;
+        /**
+         * 这里分了size（消息大小）跟buffer（消息内容），就进行粘包的处理！！！
+         *  请求格式：大小+消息内容
+         *
+         * size没读满的话，就是拆包，还需要下次把剩下的size读完
+         */
         if (size.hasRemaining()) {
+            /**
+             * 1。 读取大小 前4位Integer
+             */
             int bytesRead = channel.read(size);
             if (bytesRead < 0)
                 throw new EOFException();
+            // 已经读取的大小
             read += bytesRead;
+            // size没空间(正常，因为size就4位，读取大小的4位就满了)
             if (!size.hasRemaining()) {
+                // position重置到0
                 size.rewind();
+                /**
+                 * 获取消息大小值（前4位int）
+                 */
                 int receiveSize = size.getInt();
                 if (receiveSize < 0)
                     throw new InvalidReceiveException("Invalid receive (size = " + receiveSize + ")");
+                // 大小超出限制
                 if (maxSize != UNLIMITED && receiveSize > maxSize)
                     throw new InvalidReceiveException("Invalid receive (size = " + receiveSize + " larger than " + maxSize + ")");
                 requestedBufferSize = receiveSize; //may be 0 for some payloads (SASL)
@@ -110,11 +132,18 @@ public class NetworkReceive implements Receive {
             }
         }
         if (buffer == null && requestedBufferSize != -1) { //we know the size we want but havent been able to allocate it yet
+            /**
+             * 创建消息大小的ByteBuffer
+             */
             buffer = memoryPool.tryAllocate(requestedBufferSize);
             if (buffer == null)
                 log.trace("Broker low on memory - could not allocate buffer of size {} for source {}", requestedBufferSize, source);
         }
+
         if (buffer != null) {
+            /**
+             * 从java nio channel读取消息内容
+             */
             int bytesRead = channel.read(buffer);
             if (bytesRead < 0)
                 throw new EOFException();

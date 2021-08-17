@@ -127,6 +127,7 @@ class ControllerEventManager(controllerId: Int,
           eventQueueTimeHist.update(time.milliseconds() - dequeued.enqueueTimeMs)
 
           try {
+            // 启动
             def process(): Unit = dequeued.process(processor)
 
             rateAndTimeMetrics.get(state) match {

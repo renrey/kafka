@@ -94,9 +94,11 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
      * the {@link ResponseHeader} as well as the response payload.
      */
     public static AbstractResponse parseResponse(ByteBuffer buffer, RequestHeader requestHeader) {
+        // API请求的请求头
         ApiKeys apiKey = requestHeader.apiKey();
         short apiVersion = requestHeader.apiVersion();
 
+        // 通过API请求的header转换响应头（转换对应api的响应头对象）
         ResponseHeader responseHeader = ResponseHeader.parse(buffer, apiKey.responseHeaderVersion(apiVersion));
 
         if (requestHeader.correlationId() != responseHeader.correlationId()) {
@@ -106,6 +108,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
                 requestHeader.correlationId(), responseHeader.correlationId());
         }
 
+        // 通过API请求的header转换响应对象（转换对应api的响应对象）
         return AbstractResponse.parseResponse(apiKey, buffer, apiVersion);
     }
 

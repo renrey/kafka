@@ -189,6 +189,7 @@ class KafkaServer(
         brokerState = BrokerState.STARTING
 
         /* setup zookeeper */
+        // 启动zk客户端
         initZkClient(time)
         configRepository = new ZkConfigRepository(new AdminZkClient(zkClient))
 
@@ -244,8 +245,12 @@ class KafkaServer(
 
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
+        /**
+         * log mananger 日志管理（磁盘）
+         */
         /* start log manager */
         logManager = LogManager(config, initialOfflineDirs,
+          // 从zk加载topic信息
           new ZkConfigRepository(new AdminZkClient(zkClient)),
           kafkaScheduler, time, brokerTopicStats, logDirFailureChannel, config.usesTopicId)
         brokerState = BrokerState.RECOVERY
@@ -288,10 +293,14 @@ class KafkaServer(
         //
         // Note that we allow the use of KRaft mode controller APIs when forwarding is enabled
         // so that the Envelope request is exposed. This is only used in testing currently.
+        /**
+         * socket 网络通信启动
+         */
         socketServer = new SocketServer(config, metrics, time, credentialProvider, apiVersionManager)
         socketServer.startup(startProcessingRequests = false)
 
         /* start replica manager */
+        // 是否内置ISR，不是就ZK
         alterIsrManager = if (config.interBrokerProtocolVersion.isAlterIsrSupported) {
           AlterIsrManager(
             config = config,
@@ -308,9 +317,18 @@ class KafkaServer(
         }
         alterIsrManager.start()
 
+        /**
+         * replicaManager 集群间同步之类的操作
+         * 主要调用logManager 写日志
+         * startup：
+         * 启动ISR过期线程
+         */
         replicaManager = createReplicaManager(isShuttingDown)
         replicaManager.startup()
 
+        /**
+         * 在zk注册broker(创建znode)
+         */
         val brokerInfo = createBrokerInfo
         val brokerEpoch = zkClient.registerBroker(brokerInfo)
 
@@ -321,12 +339,14 @@ class KafkaServer(
         tokenManager = new DelegationTokenManager(config, tokenCache, time , zkClient)
         tokenManager.startup()
 
+        // kafka集群的controller
         /* start kafka controller */
         kafkaController = new KafkaController(config, zkClient, time, metrics, brokerInfo, brokerEpoch, tokenManager, brokerFeatures, featureCache, threadNamePrefix)
         kafkaController.startup()
 
         adminManager = new ZkAdminManager(config, metrics, metadataCache, zkClient)
 
+        // consumer group的
         /* start group coordinator */
         // Hardcode Time.SYSTEM for now as some Streams tests fail otherwise, it would be good to fix the underlying issue
         groupCoordinator = GroupCoordinator(config, replicaManager, Time.SYSTEM, metrics)
@@ -382,10 +402,13 @@ class KafkaServer(
 
         /* start processing requests */
         val zkSupport = ZkSupport(adminManager, kafkaController, zkClient, forwardingManager, metadataCache)
+
+        // KafkaApis创建，对其他集群暴露的API接口
+        // handle处理请求
         dataPlaneRequestProcessor = new KafkaApis(socketServer.dataPlaneRequestChannel, zkSupport, replicaManager, groupCoordinator, transactionCoordinator,
           autoTopicCreationManager, config.brokerId, config, configRepository, metadataCache, metrics, authorizer, quotaManagers,
           fetchManager, brokerTopicStats, clusterId, time, tokenManager, apiVersionManager)
-
+        // KafkaRequestHandlerPool, 处理请求的Handler线程池
         dataPlaneRequestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.dataPlaneRequestChannel, dataPlaneRequestProcessor, time,
           config.numIoThreads, s"${SocketServer.DataPlaneMetricPrefix}RequestHandlerAvgIdlePercent", SocketServer.DataPlaneThreadPrefix)
 
@@ -458,6 +481,7 @@ class KafkaServer(
     zkClient.getClusterId.getOrElse(zkClient.createOrGetClusterId(CoreUtils.generateUuidAsBase64()))
   }
 
+  // 初始化broker信息
   def createBrokerInfo: BrokerInfo = {
     val endPoints = config.advertisedListeners.map(e => s"${e.host}:${e.port}")
     zkClient.getAllBrokersInCluster.filter(_.id != config.brokerId).foreach { broker =>

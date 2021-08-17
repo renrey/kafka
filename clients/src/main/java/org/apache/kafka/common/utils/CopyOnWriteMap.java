@@ -85,7 +85,9 @@ public class CopyOnWriteMap<K, V> implements ConcurrentMap<K, V> {
 
     @Override
     public synchronized V put(K k, V v) {
+        // 拷贝，生成新的对象
         Map<K, V> copy = new HashMap<K, V>(this.map);
+        // 放入值
         V prev = copy.put(k, v);
         this.map = Collections.unmodifiableMap(copy);
         return prev;

@@ -253,6 +253,10 @@ public class ProduceRequest extends AbstractRequest {
     }
 
     public static ProduceRequest parse(ByteBuffer buffer, short version) {
+        /**
+         *  ByteBufferAccessor里面保存了内容的ByteBuffer
+         *  就是并没有解析实际消息的内容，直接把字节数组，保存到磁盘
+         */
         return new ProduceRequest(new ProduceRequestData(new ByteBufferAccessor(buffer), version), version);
     }
 

@@ -57,6 +57,11 @@ class DelayedProduce(delayMs: Long,
                      lockOpt: Option[Lock] = None)
   extends DelayedOperation(delayMs, lockOpt) {
 
+  /**
+   * 初始化先更新所有没出现错误partition的响应对象：
+   * status.acksPending = true
+   * error：REQUEST_TIMED_OUT超时
+   */
   // first update the acks pending variable according to the error code
   produceMetadata.produceStatus.forKeyValue { (topicPartition, status) =>
     if (status.responseStatus.error == Errors.NONE) {
@@ -79,18 +84,23 @@ class DelayedProduce(delayMs: Long,
    *   B.1 - If there was a local error thrown while checking if at least requiredAcks
    *         replicas have caught up to this operation: set an error in response
    *   B.2 - Otherwise, set the response with no error.
+   *   当前broker不是leader：发送错误响应
+   *   当前broker是leader:
+   *   1. 如果出现异常，直接返回错误
    */
   override def tryComplete(): Boolean = {
     // check for each partition if it still has pending acks
     produceMetadata.produceStatus.forKeyValue { (topicPartition, status) =>
       trace(s"Checking produce satisfaction for $topicPartition, current status $status")
       // skip those partitions that have already been satisfied
+      // 默认已经true, 代表待校验
       if (status.acksPending) {
         val (hasEnough, error) = replicaManager.getPartitionOrError(topicPartition) match {
+          // 出错
           case Left(err) =>
             // Case A
             (false, err)
-
+          // 正常，校验是否达标
           case Right(partition) =>
             partition.checkEnoughReplicasReachOffset(status.requiredOffset)
         }
@@ -103,6 +113,9 @@ class DelayedProduce(delayMs: Long,
       }
     }
 
+    /**
+     * 如果每个分区都监触发过了，直接forceComplete() 把任务从时间轮删除
+     */
     // check if every partition has satisfied at least one of case A or B
     if (!produceMetadata.produceStatus.values.exists(_.acksPending))
       forceComplete()

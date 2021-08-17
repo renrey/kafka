@@ -73,9 +73,12 @@ public class ProducerMetadata extends Metadata {
     }
 
     public synchronized int requestUpdateForTopic(String topic) {
+        // 内存中的topic列表，有这个topic
         if (newTopics.contains(topic)) {
+            // 标志为增量更新
             return requestUpdateForNewTopics();
         } else {
+            // 标志为全量更新
             return requestUpdate();
         }
     }
@@ -112,10 +115,16 @@ public class ProducerMetadata extends Metadata {
 
     /**
      * Wait for metadata update until the current version is larger than the last version we know of
+     * 等待最新的版本比之前最后一次的版本号，才认为成功
      */
     public synchronized void awaitUpdate(final int lastVersion, final long timeoutMs) throws InterruptedException {
         long currentTimeMs = time.milliseconds();
+        // 超时的时间点
         long deadlineMs = currentTimeMs + timeoutMs < 0 ? Long.MAX_VALUE : currentTimeMs + timeoutMs;
+        /**
+         * 等待更新版本号，有超时时间
+         * 主要通过更新版本后的唤醒，来进行判断
+         */
         time.waitObject(this, () -> {
             // Throw fatal exceptions, if there are any. Recoverable topic errors will be handled by the caller.
             maybeThrowFatalException();
@@ -137,7 +146,7 @@ public class ProducerMetadata extends Metadata {
                 newTopics.remove(metadata.topic());
             }
         }
-
+        // 唤醒其他等待的线程，如等待获取元数据
         notifyAll();
     }
 

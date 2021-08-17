@@ -164,6 +164,7 @@ object LogLoader extends Logging {
 
     val (newRecoveryPoint: Long, nextOffset: Long) = {
       if (!params.dir.getAbsolutePath.endsWith(Log.DeleteDirSuffix)) {
+        // nextOffset生成（正常就LEO）
         val (newRecoveryPoint, nextOffset) = retryOnOffsetOverflow(params, {
           recoverLog(params)
         })
@@ -181,6 +182,7 @@ object LogLoader extends Logging {
               time = params.time,
               initFileSize = params.config.initFileSize))
         }
+        // 0，0
         (0L, 0L)
       }
     }
@@ -212,6 +214,7 @@ object LogLoader extends Logging {
     LoadedLogOffsets(
       newLogStartOffset,
       newRecoveryPoint,
+      //nextOffset其实就是下一个要写入offset（LEO）
       LogOffsetMetadata(nextOffset, activeSegment.baseOffset, activeSegment.size))
   }
 
@@ -462,6 +465,7 @@ object LogLoader extends Logging {
     // skip recovery for unflushed segments if the broker crashed after we checkpoint the recovery
     // point and before we flush the segment.
     (params.hadCleanShutdown, logEndOffsetOption) match {
+      // 正常关闭时，返回（LEO, LEO）
       case (true, Some(logEndOffset)) =>
         (logEndOffset, logEndOffset)
       case _ =>

@@ -177,6 +177,10 @@ class ReplicaFetcherThread(name: String,
         .format(log.logEndOffset, topicPartition, records.sizeInBytes, partitionData.highWatermark))
 
     // Append the leader's messages to the log
+    /**
+     * 把fetch到的消息写入本地磁盘
+     * ---就是follower的同步后操作
+     */
     val logAppendInfo = partition.appendRecordsToFollowerOrFutureReplica(records, isFuture = false)
 
     if (logTrace)
@@ -215,6 +219,9 @@ class ReplicaFetcherThread(name: String,
 
 
   override protected def fetchFromLeader(fetchRequest: FetchRequest.Builder): Map[TopicPartition, FetchData] = {
+    /**
+     * 发送请求
+     */
     val clientResponse = try {
       leaderEndpoint.sendRequest(fetchRequest)
     } catch {
@@ -276,6 +283,7 @@ class ReplicaFetcherThread(name: String,
     val topicIds = replicaMgr.metadataCache.topicNamesToIds()
 
     val builder = fetchSessionHandler.newBuilder(partitionMap.size, false)
+    // 遍历每个分区
     partitionMap.forKeyValue { (topicPartition, fetchState) =>
       // We will not include a replica in the fetch request if it should be throttled.
       if (fetchState.isReadyForFetch && !shouldFollowerThrottle(quota, fetchState, topicPartition)) {
@@ -285,10 +293,15 @@ class ReplicaFetcherThread(name: String,
             fetchState.lastFetchedEpoch.map(_.asInstanceOf[Integer]).asJava
           else
             Optional.empty[Integer]
+
+          /**
+           * PartitionData（请求内容）配置
+           * fetchOffset、fetchSize 说明每次需要从那个offset开始拉取多大的
+           */
           builder.add(topicPartition, topicIds.getOrDefault(topicPartition.topic(), Uuid.ZERO_UUID), new FetchRequest.PartitionData(
-            fetchState.fetchOffset,
+            fetchState.fetchOffset, // 拉取开始的offset
             logStartOffset,
-            fetchSize,
+            fetchSize, // 拉取的大小，replica.fetch.max.bytes，默认1M
             Optional.of(fetchState.currentLeaderEpoch),
             lastFetchedEpoch))
         } catch {
@@ -299,13 +312,18 @@ class ReplicaFetcherThread(name: String,
         }
       }
     }
-
+    // 创建请求Data
     val fetchData = builder.build()
+    /**
+     * 构建请求Request对象Builder！！！fetch请求的参数配置
+     */
     val fetchRequestOpt = if (fetchData.sessionPartitions.isEmpty && fetchData.toForget.isEmpty) {
       None
     } else {
       val version: Short = if (fetchRequestVersion >= 13 && !fetchData.canUseTopicIds) 12 else fetchRequestVersion
       val requestBuilder = FetchRequest.Builder
+        // minBytes： 最少拉取的数据大小，默认1字节
+        // maxWait：没有可获取的数据，最大等待时间 ， 默认500ms
         .forReplica(version, replicaId, maxWait, minBytes, fetchData.toSend, fetchData.topicIds)
         .setMaxBytes(maxBytes)
         .toForget(fetchData.toForget)

@@ -170,6 +170,7 @@ class ZooKeeperClient(connectString: String,
         inFlightRequests.acquire()
         try {
           inReadLock(initializationLock) {
+            // 发送请求
             send(request) { response =>
               responseQueue.add(response)
               inFlightRequests.release()
@@ -302,6 +303,7 @@ class ZooKeeperClient(connectString: String,
    * @param zNodeChangeHandler the handler to register
    */
   def registerZNodeChangeHandler(zNodeChangeHandler: ZNodeChangeHandler): Unit = {
+    // 给指定path的znode，注册监听器
     zNodeChangeHandlers.put(zNodeChangeHandler.path, zNodeChangeHandler)
   }
 
@@ -440,6 +442,10 @@ class ZooKeeperClient(connectString: String,
 
   // package level visibility for testing only
   private[zookeeper] object ZooKeeperClientWatcher extends Watcher {
+    /**
+     * 接收到watcher通知的回调
+     * @param event
+     */
     override def process(event: WatchedEvent): Unit = {
       debug(s"Received event: $event")
       Option(event.getPath) match {

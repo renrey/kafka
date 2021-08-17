@@ -44,14 +44,17 @@ public class SystemTime implements Time {
     @Override
     public void waitObject(Object obj, Supplier<Boolean> condition, long deadlineMs) throws InterruptedException {
         synchronized (obj) {
+            // 一直循环
             while (true) {
+                // 调用函数，如果返回true就停止循环
                 if (condition.get())
                     return;
-
                 long currentTimeMs = milliseconds();
+
+                // 超时
                 if (currentTimeMs >= deadlineMs)
                     throw new TimeoutException("Condition not satisfied before deadline");
-
+                // 等待指定的时间
                 obj.wait(deadlineMs - currentTimeMs);
             }
         }

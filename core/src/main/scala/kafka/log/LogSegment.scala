@@ -67,6 +67,13 @@ class LogSegment private[log] (val log: FileRecords,
 
   def shouldRoll(rollParams: RollParams): Boolean = {
     val reachedRollMs = timeWaitedForRoll(rollParams.now, rollParams.maxTimestampInMessages) > rollParams.maxSegmentMs - rollJitterMs
+
+    /**
+     * 判断条件：
+     * 加入后的大小 > maxSegmentBytes
+     * offsetIndex满了
+     * timeIndex满了
+     */
     size > rollParams.maxSegmentBytes - rollParams.messagesSize ||
       (size > 0 && reachedRollMs) ||
       offsetIndex.isFull || timeIndex.isFull || !canConvertToRelativeOffset(rollParams.maxOffsetInMessages)
@@ -148,6 +155,7 @@ class LogSegment private[log] (val log: FileRecords,
     if (records.sizeInBytes > 0) {
       trace(s"Inserting ${records.sizeInBytes} bytes at end offset $largestOffset at position ${log.sizeInBytes} " +
             s"with largest timestamp $largestTimestamp at shallow offset $shallowOffsetOfMaxTimestamp")
+      // log目前的物理位置
       val physicalPosition = log.sizeInBytes()
       if (physicalPosition == 0)
         rollingBasedTimestamp = Some(largestTimestamp)
@@ -155,6 +163,9 @@ class LogSegment private[log] (val log: FileRecords,
       ensureOffsetInRange(largestOffset)
 
       // append the messages
+      /**
+       * 写入log文件
+       */
       val appendedBytes = log.append(records)
       trace(s"Appended $appendedBytes to ${log.file} at end offset $largestOffset")
       // Update the in memory max timestamp and corresponding offset.
@@ -162,8 +173,18 @@ class LogSegment private[log] (val log: FileRecords,
         maxTimestampAndOffsetSoFar = TimestampOffset(largestTimestamp, shallowOffsetOfMaxTimestamp)
       }
       // append an entry to the index (if needed)
+      /**
+       * 每累计写入 indexIntervalBytes（默认4096B） 大小后，往xxx.index文件写入一个稀疏索引（准备写入的offset及其物理位置）
+       * 稀疏索引：一组offset，主要记录这组offset的起始offset的物理位置
+       */
       if (bytesSinceLastIndexEntry > indexIntervalBytes) {
+        /**
+         * index文件写入
+         * 起始offset：largestOffset
+         * log文件的物理位置：physicalPosition
+         */
         offsetIndex.append(largestOffset, physicalPosition)
+        // timeindex写入
         timeIndex.maybeAppend(maxTimestampSoFar, offsetOfMaxTimestampSoFar)
         bytesSinceLastIndexEntry = 0
       }
@@ -270,7 +291,18 @@ class LogSegment private[log] (val log: FileRecords,
    */
   @threadsafe
   private[log] def translateOffset(offset: Long, startingFilePosition: Int = 0): LogOffsetPosition = {
+    /**
+     * 1。 通过二分查找，获取目标offset所在entry信息（index上分为多个entry：index上分为多个entry：保存与segment起始offset差值）
+     * 重要！！！
+     * 1（key）：entry起始offset的实际值
+     * 2（position）：entry起始offset与segment起始offset的距离
+     */
     val mapping = offsetIndex.lookup(offset)
+
+    /**
+     * 2。 通过entry在segment（log）上查找offset的信息
+     * -----offset的位置、消息大小
+     */
     log.searchForOffsetWithSize(offset, max(mapping.position, startingFilePosition))
   }
 
@@ -294,15 +326,24 @@ class LogSegment private[log] (val log: FileRecords,
     if (maxSize < 0)
       throw new IllegalArgumentException(s"Invalid max size $maxSize for log read from segment $log")
 
+    /**
+     * 查找开始offset在segment的位置，通过在segment对应的index文件上进行二分查找
+     * 重要！！！
+     */
     val startOffsetAndSize = translateOffset(startOffset)
 
     // if the start position is already off the end of the log, return null
     if (startOffsetAndSize == null)
       return null
 
+    // 开始offset在segment的位置
     val startPosition = startOffsetAndSize.position
     val offsetMetadata = LogOffsetMetadata(startOffset, this.baseOffset, startPosition)
 
+    /**
+     * 需要获取的大小上限，只是避免开始offset的消息比maxSize大
+     * 如果开始offset的消息比maxSize大，会判断是否一定需要至少一条完整消息
+     */
     val adjustedMaxSize =
       if (minOneMessage) math.max(maxSize, startOffsetAndSize.size)
       else maxSize
@@ -312,8 +353,16 @@ class LogSegment private[log] (val log: FileRecords,
       return FetchDataInfo(offsetMetadata, MemoryRecords.EMPTY)
 
     // calculate the length of the message set to read based on whether or not they gave us a maxOffset
+    /**
+     * 本次实际获取的大小
+     * 就是这个segment的可获取位置（末尾）- 开始offset的位置
+     * 这里的位置都是在bytebuffer的位置，不是offset的差距
+     */
     val fetchSize: Int = min((maxPosition - startPosition).toInt, adjustedMaxSize)
 
+    /**
+     * 获取消息log.slice
+     */
     FetchDataInfo(offsetMetadata, log.slice(startPosition, fetchSize),
       firstEntryIncomplete = adjustedMaxSize < startOffsetAndSize.size)
   }
@@ -465,9 +514,10 @@ class LogSegment private[log] (val log: FileRecords,
   @threadsafe
   def flush(): Unit = {
     LogFlushStats.logFlushTimer.time {
+      // .log文件
       log.flush()
-      offsetIndex.flush()
-      timeIndex.flush()
+      offsetIndex.flush()//.index
+      timeIndex.flush() // .timeindex
       txnIndex.flush()
     }
   }
@@ -668,6 +718,9 @@ object LogSegment {
            initFileSize: Int = 0, preallocate: Boolean = false, fileSuffix: String = ""): LogSegment = {
     val maxIndexSize = config.maxIndexSize
     new LogSegment(
+      /**
+       * 打开log文件的FileChannel
+       */
       FileRecords.open(Log.logFile(dir, baseOffset, fileSuffix), fileAlreadyExists, initFileSize, preallocate),
       LazyIndex.forOffset(Log.offsetIndexFile(dir, baseOffset, fileSuffix), baseOffset = baseOffset, maxIndexSize = maxIndexSize),
       LazyIndex.forTime(Log.timeIndexFile(dir, baseOffset, fileSuffix), baseOffset = baseOffset, maxIndexSize = maxIndexSize),

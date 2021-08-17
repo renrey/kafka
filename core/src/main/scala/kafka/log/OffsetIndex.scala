@@ -87,12 +87,18 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
    */
   def lookup(targetOffset: Long): OffsetPosition = {
     maybeLock(lock) {
-      val idx = mmap.duplicate
+      val idx = mmap.duplicate // index文件的bytebuffer
+      /**
+       * 通过二分查找，获取目标offset所在entry下标（index上分为多个entry：保存与segment起始offset差值）
+       * 重要！！！
+       */
       val slot = largestLowerBoundSlotFor(idx, targetOffset, IndexSearchType.KEY)
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
-      else
+      else {
+        // 获取entry的信息
         parseEntry(idx, slot)
+      }
     }
   }
 
@@ -112,11 +118,15 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
     }
   }
 
+  // 得到 指定entry上的前4位int值，就与起始offset的offset差值
   private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize)
 
   private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
 
+  // n：entry下标
   override protected def parseEntry(buffer: ByteBuffer, n: Int): OffsetPosition = {
+    // 1：目标entry对应的offset ： 通过index的起始offset+与起始offset的offset差值（通过目标entry的前4位int值）
+    // 2：目标entry在文件中物理位置（与起始offset的offset差值）
     OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
   }
 
@@ -143,10 +153,19 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
       if (_entries == 0 || offset > _lastOffset) {
         trace(s"Adding index entry $offset => $position to ${file.getAbsolutePath}")
-        mmap.putInt(relativeOffset(offset))
-        mmap.putInt(position)
+
+        /**
+         * relativeOffset=offset - baseOffset，就是这个Segment的开始offset到当前offset的距离，
+         * 这样子得出的数字比较小，可以节省磁盘空间！！！
+         * 写入内容：
+         * 开始offset到当前offset的距离+物理位置， 4字节（int）+8字节（Long）=12字节
+         * 注意！！！这里都是写入到os cache中
+         */
+        mmap.putInt(relativeOffset(offset)) // offset - baseOffset（当前Segment开始offset）
+        mmap.putInt(position) // 物理位置
         _entries += 1
         _lastOffset = offset
+        // 校验字节大小
         require(_entries * entrySize == mmap.position(), s"$entries entries but file position in index is ${mmap.position()}.")
       } else {
         throw new InvalidOffsetException(s"Attempt to append an offset ($offset) to position $entries no larger than" +

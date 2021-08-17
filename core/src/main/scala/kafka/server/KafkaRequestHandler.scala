@@ -57,6 +57,9 @@ class KafkaRequestHandler(id: Int,
       // time should be discounted by # threads.
       val startSelectTime = time.nanoseconds
 
+      /**
+       * 从requestChannel的requestQueue队列中获取请求Request对象
+       */
       val req = requestChannel.receiveRequest(300)
       val endTime = time.nanoseconds
       val idleTime = endTime - startSelectTime
@@ -72,6 +75,10 @@ class KafkaRequestHandler(id: Int,
           try {
             request.requestDequeueTimeNanos = endTime
             trace(s"Kafka request handler $id on broker $brokerId handling request $request")
+
+            /**
+             * 就是调用KafkaApis的handle处理请求
+             */
             apis.handle(request, requestLocal)
           } catch {
             case e: FatalExitError =>
@@ -111,18 +118,24 @@ class KafkaRequestHandlerPool(val brokerId: Int,
                               requestHandlerAvgIdleMetricName: String,
                               logAndThreadNamePrefix : String) extends Logging with KafkaMetricsGroup {
 
+  // 线程数默认8个
   private val threadPoolSize: AtomicInteger = new AtomicInteger(numThreads)
   /* a meter to track the average free capacity of the request handlers */
   private val aggregateIdleMeter = newMeter(requestHandlerAvgIdleMetricName, "percent", TimeUnit.NANOSECONDS)
 
   this.logIdent = "[" + logAndThreadNamePrefix + " Kafka Request Handler on Broker " + brokerId + "], "
+  // KafkaRequestHandler数组，池内的KafkaRequestHandler
   val runnables = new mutable.ArrayBuffer[KafkaRequestHandler](numThreads)
+  /**
+   * 创建线程数量的Handler（处理请求通信）
+   */
   for (i <- 0 until numThreads) {
     createHandler(i)
   }
 
   def createHandler(id: Int): Unit = synchronized {
     runnables += new KafkaRequestHandler(id, brokerId, aggregateIdleMeter, threadPoolSize, requestChannel, apis, time)
+    // 启动KafkaRequestHandler线程
     KafkaThread.daemon(logAndThreadNamePrefix + "-kafka-request-handler-" + id, runnables(id)).start()
   }
 

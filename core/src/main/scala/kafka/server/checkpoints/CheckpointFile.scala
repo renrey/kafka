@@ -43,16 +43,19 @@ class CheckpointReadBuffer[T](location: String,
 
     var line: String = null
     try {
+      // 读第1行：version
       line = reader.readLine()
       if (line == null)
         return Seq.empty
       line.toInt match {
         case fileVersion if fileVersion == version =>
+          // 读第二行：数量
           line = reader.readLine()
           if (line == null)
             return Seq.empty
           val expectedSize = line.toInt
           val entries = mutable.Buffer[T]()
+          // 开始读后面的每一行
           line = reader.readLine()
           while (line != null) {
             val entry = formatter.fromLine(line)
@@ -94,12 +97,15 @@ class CheckpointFile[T](val file: File,
         val fileOutputStream = new FileOutputStream(tempPath.toFile)
         val writer = new BufferedWriter(new OutputStreamWriter(fileOutputStream, StandardCharsets.UTF_8))
         try {
+          // 第1行版本号
           writer.write(version.toString)
           writer.newLine()
 
+          // 第2行数量
           writer.write(entries.size.toString)
           writer.newLine()
 
+          // 第3行开始，每个分区offset：topic partition offset
           entries.foreach { entry =>
             writer.write(formatter.toLine(entry))
             writer.newLine()

@@ -43,6 +43,7 @@ import scala.concurrent.ExecutionException
 
 object TopicCommand extends Logging {
 
+  // topic命令
   def main(args: Array[String]): Unit = {
     val opts = new TopicCommandOptions(args)
     opts.checkArgs()
@@ -51,6 +52,7 @@ object TopicCommand extends Logging {
 
     var exitCode = 0
     try {
+      // 创建topic
       if (opts.hasCreateOption)
         topicService.createTopic(opts)
       else if (opts.hasAlterOption)
@@ -226,6 +228,7 @@ object TopicCommand extends Logging {
         throw new IllegalArgumentException(s"The partitions must be greater than 0")
 
       try {
+        // 是否replica-assignment指定副本分配
         val newTopic = if (topic.hasReplicaAssignment)
           new NewTopic(topic.name, asJavaReplicaReassignment(topic.replicaAssignment.get))
         else {

@@ -90,7 +90,11 @@ public final class NetworkClientUtils {
      */
     public static ClientResponse sendAndReceive(KafkaClient client, ClientRequest request, Time time) throws IOException {
         try {
+            // 发送
             client.send(request, time.milliseconds());
+            /**
+             * 一直阻塞等待返回响应
+             */
             while (client.active()) {
                 List<ClientResponse> responses = client.poll(Long.MAX_VALUE, time.milliseconds());
                 for (ClientResponse response : responses) {

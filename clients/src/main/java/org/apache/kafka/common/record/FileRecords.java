@@ -134,7 +134,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @return A sliced wrapper on this message set limited based on the given position and size
      */
     public FileRecords slice(int position, int size) throws IOException {
+        // 计算读取大小
         int availableBytes = availableBytes(position, size);
+        // 计算开始的下标
         int startPosition = this.start + position;
         return new FileRecords(file, channel, startPosition, startPosition + availableBytes, true);
     }
@@ -184,7 +186,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (records.sizeInBytes() > Integer.MAX_VALUE - size.get())
             throw new IllegalArgumentException("Append of size " + records.sizeInBytes() +
                     " bytes is too large for segment with current file position at " + size.get());
-
+        /**
+         * 数据写入log文件的channel
+         */
         int written = records.writeFullyTo(channel);
         size.getAndAdd(written);
         return written;
@@ -313,7 +317,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param startingPosition The starting position in the file to begin searching from.
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
+        // 从startingPosition的batch开始遍历
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {
+            /**
+             * 如果当前batch的offset==targetOffset，就需要找的offset信息，
+             * 返回offset的位置、消息大小
+             */
             long offset = batch.lastOffset();
             if (offset >= targetOffset)
                 return new LogOffsetPosition(offset, batch.position(), batch.sizeInBytes());
@@ -425,6 +434,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
                                    boolean fileAlreadyExists,
                                    int initFileSize,
                                    boolean preallocate) throws IOException {
+        /**
+         * 创建文件channel
+         */
         FileChannel channel = openChannel(file, mutable, fileAlreadyExists, initFileSize, preallocate);
         int end = (!fileAlreadyExists && preallocate) ? 0 : Integer.MAX_VALUE;
         return new FileRecords(file, channel, 0, end, false);

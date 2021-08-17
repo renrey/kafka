@@ -42,17 +42,21 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
   // Length of the index file
   @volatile
   private var _length: Long = _
-  protected def entrySize: Int
+  protected def entrySize: Int  // 一个entry的大小
 
   /*
+   通过mmap，映射index文件到内存，所有的读写操作都是在OS page cache上。可以避免磁盘io的堵塞
    Kafka mmaps index files into memory, and all the read / write operations of the index is through OS page cache. This
    avoids blocked disk I/O in most cases.
 
+   一般操作系统都是lru或者它的变种来管理page cache（页缓存）。而kafka都是追加写到index文件的末尾，并且一些查找操作都是接近文件末尾的。所以
+   这个类似lru的处理，会运行得挺不错（就是一般不会去找前面的要被淘汰的）。
    To the extent of our knowledge, all the modern operating systems use LRU policy or its variants to manage page
    cache. Kafka always appends to the end of the index file, and almost all the index lookups (typically from in-sync
    followers or consumers) are very close to the end of the index. So, the LRU cache replacement policy should work very
    well with Kafka's index access pattern.
 
+   然而传统的二分查找算法对缓存来说不太友好。会导致一些没必要的page fault错误，比如当一些entry没有在page cache时，线程会堵塞等待从硬盘读取这些entry
    However, when looking up index, the standard binary search algorithm is not cache friendly, and can cause unnecessary
    page faults (the thread is blocked to wait for reading some index entries from hard disk, as those entries are not
    cached in the page cache).
@@ -69,21 +73,35 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
    and 13:
    page number: |0|1|2|3|4|5|6|7|8|9|10|11|12|13 |
    steps:       |1| | | | | | |3| | | 4|5 | 6|2/7|
+
+   新增page cache后，可能新的二分查找新增的位置（不是末尾），page cache并没有加载到内存中，需要重新把他们从磁盘加载进来内存，时间至少需要一秒，造成至少一次延迟，大概一秒左右。
    Page #7 and page #10 have not been used for a very long time. They are much less likely to be in the page cache, than
    the other pages. The 1st lookup, after the 1st index entry in page #13 is appended, is likely to have to read page #7
    and page #10 from disk (page fault), which can take up to more than a second. In our test, this can cause the
    at-least-once produce latency to jump to about 1 second from a few ms.
 
+   因此，这里有对缓存更友好的二分查找：
+   如果目标在end-N后，就是end-N，end范围查找，不然就是start，end-N，这就能在固定的page cache中查找
    Here, we use a more cache-friendly lookup algorithm:
    if (target > indexEntry[end - N]) // if the target is in the last N entries of the index
       binarySearch(end - N, end)
    else
       binarySearch(begin, end - N)
 
+   如果可以的话，就只在最后N个entry进行查找。
+   最好所有in-sync同步查找应该在前面的分支进行（begin, end - N）（因为查找都是一样的）。所以后面的N个就是我们叫做热区（warm section）。而我们一般频繁
+   在热区的这些缓存页中查找，所以他们会比较长时间在内存中。
    If possible, we only look up in the last N entries of the index. By choosing a proper constant N, all the in-sync
    lookups should go to the 1st branch. We call the last N entries the "warm" section. As we frequently look up in this
    relatively small section, the pages containing this section are more likely to be in the page cache.
 
+   N - _warmEntries：8192
+   原因：
+   1。这个值足够小，可以保证所有热区的page都被涉及到热区相关的搜索。
+   当做热区查找的时候，有3个entry会一直被涉及到：end[未]，end-N[头]，(end*2 -N)/2[中间，end-2/N]，如果page的大小 >= 4096,所有热区页都被读取，
+   因为在2018年的时候，所有处理器最小（读取）页单位就是4096（4k），所以4096*2（头页到尾的距离）。
+   2。这个值足够大（数据足够多）可以保证大多数的in-sync查找在热区进行。
+   对应kakfa的默认配置，8k的index对应是4M的（offsetindex） 或者 2.7M的time index
    We set N (_warmEntries) to 8192, because
    1. This number is small enough to guarantee all the pages of the "warm" section is touched in every warm-section
       lookup. So that, the entire warm section is really "warm".
@@ -97,16 +115,23 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
    We can't set make N (_warmEntries) to be larger than 8192, as there is no simple way to guarantee all the "warm"
    section pages are really warm (touched in every lookup) on a typical 4KB-page host.
 
+   未来可能使用后台定时接触热区（现在没有）
    In there future, we may use a backend thread to periodically touch the entire warm section. So that, we can
-   1) support larger warm section
-   2) make sure the warm section of low QPS topic-partitions are really warm.
+   1) support larger warm section 支持更大的热区
+   2) make sure the warm section of low QPS topic-partitions are really warm. 确保低QPS的分区的热区真的热
  */
-  protected def _warmEntries: Int = 8192 / entrySize
+  protected def _warmEntries: Int = 8192 / entrySize // 热区的entry数量 ：8192B / 每个entry的长度
 
   protected val lock = new ReentrantLock
 
+  /**
+   * 基于os cache实现的文件映射到内存的技术
+   * 就是把index文件映射到内存
+   * 这个东西的读写都是基于os cache执行的
+   */
   @volatile
   protected var mmap: MappedByteBuffer = {
+    // 创建文件.index
     val newlyCreated = file.createNewFile()
     val raf = if (writable) new RandomAccessFile(file, "rw") else new RandomAccessFile(file, "r")
     try {
@@ -119,6 +144,9 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
       /* memory-map the file */
       _length = raf.length()
+      /**
+       * 磁盘index文件与内存映射，返回一个MappedByteBuffer
+       */
       val idx = {
         if (writable)
           raf.getChannel.map(FileChannel.MapMode.READ_WRITE, 0, _length)
@@ -145,7 +173,7 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
 
   /** The number of entries in this index */
   @volatile
-  protected var _entries: Int = mmap.position() / entrySize
+  protected var _entries: Int = mmap.position() / entrySize // 当前entry数量
 
   /**
    * True iff there are no more slots available in this index
@@ -375,6 +403,13 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
     if(_entries == 0)
       return (-1, -1)
 
+    /**
+     * 二分查找entry（目标offset在index中对应entry）
+     * @param begin
+     * @param end
+     * @return 1：entry
+     *         2：
+     */
     def binarySearch(begin: Int, end: Int) : (Int, Int) = {
       // binary search for the entry
       var lo = begin
@@ -383,18 +418,30 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
         val mid = (lo + hi + 1) >>> 1
         val found = parseEntry(idx, mid)
         val compareResult = compareIndexEntry(found, target, searchEntity)
+        // target在found前，更新右边界为中间
         if(compareResult > 0)
           hi = mid - 1
+        // target在found后，更新左边界为中间
         else if(compareResult < 0)
           lo = mid
         else
           return (mid, mid)
       }
+      // 1：左边界 2：左边界+1
+      // 如果是左边界是末尾，那么2为-1
       (lo, if (lo == _entries - 1) -1 else lo + 1)
     }
 
+    /**
+     * index中获取第一个热区的entry下标 ：当前entry数量-1-热区entry数量 （end-N，end就是entry数-1）
+     * 可以看看_warmEntries的注释！！！
+     * _warmEntries：热区entry的数量
+     */
     val firstHotEntry = Math.max(0, _entries - 1 - _warmEntries)
     // check if the target offset is in the warm section of the index
+    /**
+     * 目标offset在热区entry范围内，在热区范围内进行二分查找（end-N，end）
+     */
     if(compareIndexEntry(parseEntry(idx, firstHotEntry), target, searchEntity) < 0) {
       return binarySearch(firstHotEntry, _entries - 1)
     }
@@ -403,6 +450,9 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
     if(compareIndexEntry(parseEntry(idx, 0), target, searchEntity) > 0)
       return (-1, 0)
 
+    /**
+     * 否则在前面的非热区范围进行二分查找（0，end-N）
+     */
     binarySearch(0, firstHotEntry)
   }
 

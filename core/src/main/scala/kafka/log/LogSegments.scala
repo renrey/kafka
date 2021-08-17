@@ -154,6 +154,7 @@ class LogSegments(topicPartition: TopicPartition) {
   /**
    * @return the entry associated with the greatest offset less than or equal to the given offset,
    *         if it exists.
+   *  获取起始offset <= 指定offset 中，且这当中最大（也就是指定offset前面最近的一个起始offset）的segment
    */
   @threadsafe
   private def floorEntry(offset: Long): Option[Map.Entry[Long, LogSegment]] = Option(segments.floorEntry(offset))

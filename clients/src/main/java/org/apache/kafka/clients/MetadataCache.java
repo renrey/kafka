@@ -226,6 +226,7 @@ public class MetadataCache {
         }
         return new MetadataCache(null, nodes, Collections.emptyList(),
                 Collections.emptySet(), Collections.emptySet(), Collections.emptySet(),
+                // Cluster初始化
                 null, Collections.emptyMap(), Cluster.bootstrap(addresses));
     }
 

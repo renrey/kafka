@@ -35,7 +35,9 @@ object OffsetCheckpointFile {
     }
 
     override def fromLine(line: String): Option[(TopicPartition, Long)] = {
+      // 分割空格
       WhiteSpacesPattern.split(line) match {
+        // 内容格式：topic partition offset
         case Array(topic, partition, offset) =>
           Some(new TopicPartition(topic, partition.toInt), offset.toLong)
         case _ => None
@@ -66,6 +68,7 @@ class OffsetCheckpointFile(val file: File, logDirFailureChannel: LogDirFailureCh
 
   def write(offsets: Map[TopicPartition, Long]): Unit = checkpoint.write(offsets)
 
+  // 读取文件，内容转成Map
   def read(): Map[TopicPartition, Long] = checkpoint.read().toMap
 
 }

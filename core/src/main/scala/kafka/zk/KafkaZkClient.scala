@@ -141,11 +141,15 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     def tryCreateControllerZNodeAndIncrementEpoch(): (Int, Int) = {
       val response = retryRequestUntilConnected(
         MultiRequest(Seq(
+          // 创建znode
           CreateOp(ControllerZNode.path, ControllerZNode.encode(controllerId, timestamp), defaultAcls(ControllerZNode.path), CreateMode.EPHEMERAL),
+          // 赋值
           SetDataOp(ControllerEpochZNode.path, ControllerEpochZNode.encode(newControllerEpoch), expectedControllerEpochZkVersion)))
       )
       response.resultCode match {
+        // 已被创建
         case Code.NODEEXISTS | Code.BADVERSION => checkControllerAndEpoch()
+        // 成为controller成功
         case Code.OK =>
           val setDataResult = response.zkOpResults(1).rawOpResult.asInstanceOf[SetDataResult]
           (newControllerEpoch, setDataResult.getStat.getVersion)
@@ -153,6 +157,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
       }
     }
 
+    // 执行创建！！！
     tryCreateControllerZNodeAndIncrementEpoch()
   }
 
@@ -424,7 +429,9 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     * @return map of broker to epoch in the cluster.
     */
   def getAllBrokerAndEpochsInCluster: Map[Broker, Long] = {
+    // 1. 从zk获取/brokers/ids 下的所有子znode的名称，即所有broker_ID
     val brokerIds = getSortedBrokerList
+    // 2. 通过上面的broker逐个获取对应的节点data信息，即获取所有broker信息
     val getDataRequests = brokerIds.map(brokerId => GetDataRequest(BrokerIdZNode.path(brokerId), ctx = Some(brokerId)))
     val getDataResponses = retryRequestsUntilConnected(getDataRequests)
     getDataResponses.flatMap { getDataResponse =>
@@ -1777,6 +1784,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
     val remainingRequests = new mutable.ArrayBuffer(requests.size) ++= requests
     val responses = new mutable.ArrayBuffer[Req#Response]
     while (remainingRequests.nonEmpty) {
+      // 取出请求进行处理，发送
       val batchResponses = zooKeeperClient.handleRequests(remainingRequests)
 
       batchResponses.foreach(response => latencyMetric.update(response.metadata.responseTimeMs))

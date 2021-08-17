@@ -39,12 +39,12 @@ public final class Cluster {
     private final Set<String> unauthorizedTopics;
     private final Set<String> invalidTopics;
     private final Set<String> internalTopics;
-    private final Node controller;
-    private final Map<TopicPartition, PartitionInfo> partitionsByTopicPartition;
-    private final Map<String, List<PartitionInfo>> partitionsByTopic;
-    private final Map<String, List<PartitionInfo>> availablePartitionsByTopic;
-    private final Map<Integer, List<PartitionInfo>> partitionsByNode;
-    private final Map<Integer, Node> nodesById;
+    private final Node controller; // controller的broker
+    private final Map<TopicPartition, PartitionInfo> partitionsByTopicPartition; // 分区-分区详细信息
+    private final Map<String, List<PartitionInfo>> partitionsByTopic; // topic -分区
+    private final Map<String, List<PartitionInfo>> availablePartitionsByTopic; // topic - 可用分区
+    private final Map<Integer, List<PartitionInfo>> partitionsByNode; // broker - 分区
+    private final Map<Integer, Node> nodesById; // id-broker
     private final ClusterResource clusterResource;
     private final Map<String, Uuid> topicIds;
 

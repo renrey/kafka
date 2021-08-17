@@ -64,6 +64,7 @@ public class DefaultPartitioner implements Partitioner {
      */
     public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster,
                          int numPartitions) {
+        // 没序列化key，负责均衡
         if (keyBytes == null) {
             return stickyPartitionCache.partition(topic, cluster);
         }

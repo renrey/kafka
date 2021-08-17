@@ -156,6 +156,7 @@ class DelayedFetch(delayMs: Long,
         }
     }
 
+    // 超过需要获取的最小大小，直接返回
     // Case G
     if (accumulatedSize >= fetchMetadata.fetchMinBytes)
        forceComplete()

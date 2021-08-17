@@ -56,6 +56,7 @@ abstract class AbstractFetcherThread(name: String,
                                      fetchBackOffMs: Int = 0,
                                      isInterruptible: Boolean = true,
                                      val brokerTopicStats: BrokerTopicStats) //BrokerTopicStats's lifecycle managed by ReplicaManager
+  // 继承ShutdownableThread
   extends ShutdownableThread(name, isInterruptible) {
 
   type FetchData = FetchResponseData.PartitionData
@@ -114,13 +115,22 @@ abstract class AbstractFetcherThread(name: String,
     fetcherLagStats.unregister()
   }
 
+  /**
+   * 启动执行的方法，其实run方法在父类中，当中调用了doWork这个方法
+   */
   override def doWork(): Unit = {
     maybeTruncate()
+    // 拉取数据
     maybeFetch()
   }
 
   private def maybeFetch(): Unit = {
+    // 拉取请求
     val fetchRequestOpt = inLock(partitionMapLock) {
+      /**
+       * 构建请求，参数配置
+       * kafka.server.ReplicaFetcherThread.buildFetch()！！！
+       */
       val ResultWithPartitions(fetchRequestOpt, partitionsWithError) = buildFetch(partitionStates.partitionStateMap.asScala)
 
       handlePartitionsWithErrors(partitionsWithError, "maybeFetch")
@@ -133,7 +143,11 @@ abstract class AbstractFetcherThread(name: String,
       fetchRequestOpt
     }
 
+    /**
+     * 执行请求
+     */
     fetchRequestOpt.foreach { case ReplicaFetch(sessionPartitions, fetchRequest) =>
+      // fetchRequest实际还是builder
       processFetchRequest(sessionPartitions, fetchRequest)
     }
   }
@@ -310,6 +324,10 @@ abstract class AbstractFetcherThread(name: String,
 
     try {
       trace(s"Sending fetch request $fetchRequest")
+      /**
+       * 执行请求
+       * ReplicaFetcherThread#fetchFromLeader(org.apache.kafka.common.requests.FetchRequest.Builder)
+       */
       responseData = fetchFromLeader(fetchRequest)
     } catch {
       case t: Throwable =>

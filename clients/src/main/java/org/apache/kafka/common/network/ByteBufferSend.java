@@ -55,9 +55,11 @@ public class ByteBufferSend implements Send {
 
     @Override
     public long writeTo(TransferableChannel channel) throws IOException {
+        // 把ByteBuffer写入java nio channel
         long written = channel.write(buffers);
         if (written < 0)
             throw new EOFException("Wrote negative bytes to channel. This shouldn't happen.");
+        // 更新 剩余未发送的大小
         remaining -= written;
         pending = channel.hasPendingWrites();
         return written;

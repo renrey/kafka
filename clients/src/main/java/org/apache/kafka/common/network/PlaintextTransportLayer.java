@@ -48,6 +48,12 @@ public class PlaintextTransportLayer implements TransportLayer {
     @Override
     public boolean finishConnect() throws IOException {
         boolean connected = socketChannel.finishConnect();
+        /**
+         * 更新需要监听的事件：
+         * 不关注连接完成
+         * 增加关注Read响应
+         * 主要关注普通通信（读、写）
+         */
         if (connected)
             key.interestOps(key.interestOps() & ~SelectionKey.OP_CONNECT | SelectionKey.OP_READ);
         return connected;

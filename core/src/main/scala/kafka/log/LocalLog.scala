@@ -158,6 +158,7 @@ class LocalLog(@volatile private var _dir: File,
 
   /**
    * The number of messages appended to the log since the last flush
+   * recoveryPoint：当前已刷入磁盘的offset
    */
   private[log] def unflushedMessages: Long = logEndOffset - recoveryPoint
 
@@ -168,7 +169,14 @@ class LocalLog(@volatile private var _dir: File,
    * @param offset The offset to flush up to (non-inclusive)
    */
   private[log] def flush(offset: Long): Unit = {
+    /**
+     * 获取需要flush的segment文件
+     */
     val segmentsToFlush = segments.values(recoveryPoint, offset)
+
+    /**
+     * 遍历segmentsToFlush进行flush
+     */
     segmentsToFlush.foreach(_.flush())
     // If there are any new segments, we need to flush the parent directory for crash consistency.
     segmentsToFlush.lastOption.filter(_.baseOffset >= this.recoveryPoint).foreach(_ => Utils.flushDir(dir.toPath))
@@ -186,6 +194,7 @@ class LocalLog(@volatile private var _dir: File,
 
   /**
    * The offset of the next message that will be appended to the log
+   * LEO属性
    */
   private[log] def logEndOffset: Long = nextOffsetMetadata.messageOffset
 
@@ -195,6 +204,12 @@ class LocalLog(@volatile private var _dir: File,
    * @param endOffset the new end offset of the log
    */
   private[log] def updateLogEndOffset(endOffset: Long): Unit = {
+    /**
+     * 重新创建一个LogOffsetMetadata，
+     * messageOffset：offset为当前offset+1（即下一个写入offset）
+     * segmentBaseOffset（segments.activeSegment.baseOffset）：当前Segment的起始offset
+     * relativePositionInSegment（segments.activeSegment.size）：在Segment中的位置，即离起始offset的距离
+     */
     nextOffsetMetadata = LogOffsetMetadata(endOffset, segments.activeSegment.baseOffset, segments.activeSegment.size)
     if (recoveryPoint > endOffset) {
       updateRecoveryPoint(endOffset)
@@ -344,33 +359,55 @@ class LocalLog(@volatile private var _dir: File,
       trace(s"Reading maximum $maxLength bytes at offset $startOffset from log with " +
         s"total length ${segments.sizeInBytes} bytes")
 
-      val endOffsetMetadata = nextOffsetMetadata
+      val endOffsetMetadata = nextOffsetMetadata // nextOffsetMetadata代表LEO的信息
+      // 获取LEO，只是用来下面的判断startOffset是否超出范围
       val endOffset = endOffsetMetadata.messageOffset
+      /**
+       * 获取查找开始offset所在的Segment
+       *  --- 通过找这个offset前面（小于等于）距离最近一个的起始offset，对应的segment
+       */
       var segmentOpt = segments.floorSegment(startOffset)
 
       // return error on attempt to read beyond the log end offset
+      // startOffset比LEO还大，直接异常
       if (startOffset > endOffset || segmentOpt.isEmpty)
         throw new OffsetOutOfRangeException(s"Received request for offset $startOffset for partition $topicPartition, " +
           s"but we only have log segments upto $endOffset.")
 
+      // startOffset= 最新LEO，返回空
       if (startOffset == maxOffsetMetadata.messageOffset)
         emptyFetchDataInfo(maxOffsetMetadata, includeAbortedTxns)
+      // startOffset > 最新的LEO，返回空且 抛出异常（用这个最新Leo又调用read来判断，在上面的判断抛异常）
       else if (startOffset > maxOffsetMetadata.messageOffset)
         emptyFetchDataInfo(convertToOffsetMetadataOrThrow(startOffset), includeAbortedTxns)
+      // 可以有返回数据（startoffset < LEO）
       else {
         // Do the read on the segment with a base offset less than the target offset
         // but if that segment doesn't contain any messages with an offset greater than that
         // continue to read from successive segments until we get some messages or we reach the end of the log
         var fetchDataInfo: FetchDataInfo = null
         while (fetchDataInfo == null && segmentOpt.isDefined) {
-          val segment = segmentOpt.get
-          val baseOffset = segment.baseOffset
+          val segment = segmentOpt.get // segment
+          val baseOffset = segment.baseOffset //segment起始offset
 
+          /**
+           * 获取本次循环获取在segment可获取的最大的大小
+           * 1. 判断LEO所在的segment起始offset == 拉取offset所在的segment起始offset
+           * ---其实判断就是当前LEO的segment是不是拉取offset的segment
+           *
+           * 是：LEO在Segment的物理position（LEO已经是末尾，只能获取到LEO的位置）
+           * 不是：一个segment的大小（可获取这一整个segment，LEO不在这个segemnt，代表这个segment已经写完）
+           *
+           * 注意：其实拉取一次消息，只能拿到开始offset所在的segment的消息，并不涉及下一个segment的
+           */
           val maxPosition =
           // Use the max offset position if it is on this segment; otherwise, the segment size is the limit.
             if (maxOffsetMetadata.segmentBaseOffset == segment.baseOffset) maxOffsetMetadata.relativePositionInSegment
             else segment.size
 
+          /**
+           * 从当前segment读取消息
+           */
           fetchDataInfo = segment.read(startOffset, maxLength, maxPosition, minOneMessage)
           if (fetchDataInfo != null) {
             if (includeAbortedTxns)
@@ -378,6 +415,7 @@ class LocalLog(@volatile private var _dir: File,
           } else segmentOpt = segments.higherSegment(baseOffset)
         }
 
+        // 返回
         if (fetchDataInfo != null) fetchDataInfo
         else {
           // okay we are beyond the end of the last segment with no data fetched although the start offset is in range,
@@ -390,8 +428,15 @@ class LocalLog(@volatile private var _dir: File,
   }
 
   private[log] def append(lastOffset: Long, largestTimestamp: Long, shallowOffsetOfMaxTimestamp: Long, records: MemoryRecords): Unit = {
+    /**
+     * 1. 当前Segment文件append写磁盘
+     */
     segments.activeSegment.append(largestOffset = lastOffset, largestTimestamp = largestTimestamp,
       shallowOffsetOfMaxTimestamp = shallowOffsetOfMaxTimestamp, records = records)
+
+    /**
+     * 2. 更新LEO， 当前offset+1
+     */
     updateLogEndOffset(lastOffset + 1)
   }
 
@@ -449,9 +494,12 @@ class LocalLog(@volatile private var _dir: File,
     maybeHandleIOException(s"Error while rolling log segment for $topicPartition in dir ${dir.getParent}") {
       val start = time.hiResClockMs()
       checkIfMemoryMappedBufferClosed()
+      // LEO
       val newOffset = math.max(expectedNextOffset.getOrElse(0L), logEndOffset)
+      // 名称为LEO序号的文件（.log）
       val logFile = LocalLog.logFile(dir, newOffset)
       val activeSegment = segments.activeSegment
+      // 已经存在这个offset的Segment，
       if (segments.contains(newOffset)) {
         // segment with the same base offset already exists and loaded
         if (activeSegment.baseOffset == newOffset && activeSegment.size == 0) {
@@ -467,15 +515,18 @@ class LocalLog(@volatile private var _dir: File,
             s" =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) while it already exists. Existing " +
             s"segment is ${segments.get(newOffset)}.")
         }
+      //   LEO < 已有的Segment的offset
       } else if (!segments.isEmpty && newOffset < activeSegment.baseOffset) {
         throw new KafkaException(
           s"Trying to roll a new log segment for topic partition $topicPartition with " +
             s"start offset $newOffset =max(provided offset = $expectedNextOffset, LEO = $logEndOffset) lower than start offset of the active segment $activeSegment")
+      // 正常
       } else {
-        val offsetIdxFile = offsetIndexFile(dir, newOffset)
-        val timeIdxFile = timeIndexFile(dir, newOffset)
-        val txnIdxFile = transactionIndexFile(dir, newOffset)
+        val offsetIdxFile = offsetIndexFile(dir, newOffset) // .index
+        val timeIdxFile = timeIndexFile(dir, newOffset) // .timeindex
+        val txnIdxFile = transactionIndexFile(dir, newOffset) // .txnindex
 
+        // 如果文件都存在，先删除
         for (file <- List(logFile, offsetIdxFile, timeIdxFile, txnIdxFile) if file.exists) {
           warn(s"Newly rolled segment file ${file.getAbsolutePath} already exists; deleting it first")
           Files.delete(file.toPath)
@@ -484,6 +535,10 @@ class LocalLog(@volatile private var _dir: File,
         segments.lastSegment.foreach(_.onBecomeInactiveSegment())
       }
 
+      /**
+       * 创建新的LogSegment，然后放入segments中：
+       * 打开log文件的FileChannel
+       */
       val newSegment = LogSegment.open(dir,
         baseOffset = newOffset,
         config,
@@ -494,6 +549,7 @@ class LocalLog(@volatile private var _dir: File,
 
       // We need to update the segment base offset and append position data of the metadata when log rolls.
       // The next offset should not change.
+      // 更新LEO
       updateLogEndOffset(nextOffsetMetadata.messageOffset)
 
       info(s"Rolled new log segment at offset $newOffset in ${time.hiResClockMs() - start} ms.")

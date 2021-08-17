@@ -30,10 +30,12 @@ private[timer] class TimerTaskList(taskCounter: AtomicInteger) extends Delayed {
   // TimerTaskList forms a doubly linked cyclic list using a dummy root entry
   // root.next points to the head
   // root.prev points to the tail
+  // 当前bucket所有任务存放在链表上，一个任务对应一个TimerTaskEntry
   private[this] val root = new TimerTaskEntry(null, -1)
   root.next = root
   root.prev = root
 
+  // 过期时间，保存的是时间戳timestamp
   private[this] val expiration = new AtomicLong(-1L)
 
   // Set the bucket's expiration time

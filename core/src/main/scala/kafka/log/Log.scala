@@ -756,9 +756,14 @@ class Log(@volatile var logStartOffset: Long,
       var validRecords = trimInvalidBytes(records, appendInfo)
 
       // they are valid, insert them in the log
+      // 上锁
       lock synchronized {
         maybeHandleIOException(s"Error while appending records to $topicPartition in dir ${dir.getParent}") {
           localLog.checkIfMemoryMappedBufferClosed()
+
+          /**
+           * 分配消息在当前的分区offset，并校验
+           */
           if (validateAndAssignOffsets) {
             // assign offsets to the message set
             val offset = new LongRef(localLog.logEndOffset)
@@ -849,12 +854,18 @@ class Log(@volatile var logStartOffset: Long,
           }
 
           // check messages set size may be exceed config.segmentSize
+          /**
+           * 消息大小超出一个segment大小
+           */
           if (validRecords.sizeInBytes > config.segmentSize) {
             throw new RecordBatchTooLargeException(s"Message batch size is ${validRecords.sizeInBytes} bytes in append " +
               s"to partition $topicPartition, which exceeds the maximum configured segment size of ${config.segmentSize}.")
           }
 
           // maybe roll the log if this segment is full
+          /**
+           * 可能当前segment已经满了（1g），需要创建新的Segment
+           */
           val segment = maybeRoll(validRecords.sizeInBytes, appendInfo)
 
           val logOffsetMetadata = LogOffsetMetadata(
@@ -885,7 +896,16 @@ class Log(@volatile var logStartOffset: Long,
               // will be cleaned up after the log directory is recovered. Note that the end offset of the
               // ProducerStateManager will not be updated and the last stable offset will not advance
               // if the append to the transaction index fails.
+              /**
+               * 写入log日志文件
+               * 1： 写入当前Segment 磁盘文件（log、index）
+               * 2: 更新LEO
+               */
               localLog.append(appendInfo.lastOffset, appendInfo.maxTimestamp, appendInfo.offsetOfMaxTimestamp, validRecords)
+
+              /**
+               * 更新HW
+               */
               updateHighWatermarkWithLogEndOffset()
 
               // update the producer state
@@ -911,6 +931,10 @@ class Log(@volatile var logStartOffset: Long,
                 s"next offset: ${localLog.logEndOffset}, " +
                 s"and messages: $validRecords")
 
+              /**
+               * 进行flush刷盘
+               * 条件： 未刷盘数量 >= flush.messages
+               */
               if (localLog.unflushedMessages >= config.flushInterval) flush()
           }
           appendInfo
@@ -1170,11 +1194,16 @@ class Log(@volatile var logStartOffset: Long,
            isolation: FetchIsolation,
            minOneMessage: Boolean): FetchDataInfo = {
     checkLogStartOffset(startOffset)
+    // 想拉取的内容的类型
     val maxOffsetMetadata = isolation match {
       case FetchLogEnd => localLog.logEndOffsetMetadata
       case FetchHighWatermark => fetchHighWatermarkMetadata
       case FetchTxnCommitted => fetchLastStableOffsetMetadata
     }
+
+    /**
+     * 执行read
+     */
     localLog.read(startOffset, maxLength, minOneMessage, maxOffsetMetadata, isolation == FetchTxnCommitted)
   }
 
@@ -1426,12 +1455,16 @@ class Log(@volatile var logStartOffset: Long,
    * @return  The currently active segment after (perhaps) rolling to a new segment
    */
   private def maybeRoll(messagesSize: Int, appendInfo: LogAppendInfo): LogSegment = lock synchronized {
+    // 当前的Segment
     val segment = localLog.segments.activeSegment
     val now = time.milliseconds
 
     val maxTimestampInMessages = appendInfo.maxTimestamp
     val maxOffsetInMessages = appendInfo.lastOffset
 
+    /**
+     * 需要创建Segment
+     */
     if (segment.shouldRoll(RollParams(config, appendInfo, messagesSize, now))) {
       debug(s"Rolling new log segment (log_size = ${segment.size}/${config.segmentSize}}, " +
         s"offset_index_size = ${segment.offsetIndex.entries}/${segment.offsetIndex.maxEntries}, " +
@@ -1455,6 +1488,9 @@ class Log(@volatile var logStartOffset: Long,
         .map(_.messageOffset)
         .getOrElse(maxOffsetInMessages - Integer.MAX_VALUE)
 
+      /**
+       * roll：切换新的Segment文件
+       */
       roll(Some(rollOffset))
     } else {
       segment
@@ -1469,6 +1505,9 @@ class Log(@volatile var logStartOffset: Long,
    * @return The newly rolled segment
    */
   def roll(expectedNextOffset: Option[Long] = None): LogSegment = lock synchronized {
+    /**
+     * 执行roll
+     */
     val newSegment = localLog.roll(expectedNextOffset)
     // Take a snapshot of the producer state to facilitate recovery. It is useful to have the snapshot
     // offset align with the new segment offset since this ensures we can recover the segment by beginning
@@ -1479,6 +1518,9 @@ class Log(@volatile var logStartOffset: Long,
     producerStateManager.takeSnapshot()
     updateHighWatermarkWithLogEndOffset()
     // Schedule an asynchronous flush of the old segment
+    /**
+     * 启动定时flush
+     */
     scheduler.schedule("flush-log", () => flush(newSegment.baseOffset))
     newSegment
   }
@@ -1498,7 +1540,10 @@ class Log(@volatile var logStartOffset: Long,
       if (offset > localLog.recoveryPoint) {
         debug(s"Flushing log up to offset $offset, last flushed: $lastFlushTime,  current time: ${time.milliseconds()}, " +
           s"unflushed: ${localLog.unflushedMessages}")
+
+        // flush操作
         localLog.flush(offset)
+        // 更新recoveryPoint为offset
         lock synchronized {
           localLog.markFlushed(offset)
         }
@@ -1740,6 +1785,7 @@ object Log extends Logging {
             topicId: Option[Uuid],
             keepPartitionMetadataFile: Boolean): Log = {
     // create the log directory if it doesn't exist
+    // 如果不存在，创建分区目录
     Files.createDirectories(dir.toPath)
     val topicPartition = Log.parseTopicPartitionName(dir)
     val segments = new LogSegments(topicPartition)
@@ -1764,6 +1810,7 @@ object Log extends Logging {
       maxProducerIdExpirationMs,
       leaderEpochCache,
       producerStateManager))
+    // offsets.nextOffsetMetadata：下一个写入的offset信息（比如LEO）
     val localLog = new LocalLog(dir, config, segments, offsets.recoveryPoint,
       offsets.nextOffsetMetadata, scheduler, time, topicPartition, logDirFailureChannel)
     new Log(offsets.logStartOffset,

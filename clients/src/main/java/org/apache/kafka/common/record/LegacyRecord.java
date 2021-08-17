@@ -58,17 +58,21 @@ public final class LegacyRecord {
 
     /**
      * The size for the record header
+	 * crc+magic+attributes+timestamp
      */
+
     public static final int HEADER_SIZE_V0 = CRC_LENGTH + MAGIC_LENGTH + ATTRIBUTES_LENGTH;
     public static final int HEADER_SIZE_V1 = CRC_LENGTH + MAGIC_LENGTH + ATTRIBUTES_LENGTH + TIMESTAMP_LENGTH;
 
     /**
      * The amount of overhead bytes in a record
+     * crc+magic+attributes+key_size+value_size
      */
     public static final int RECORD_OVERHEAD_V0 = HEADER_SIZE_V0 + KEY_SIZE_LENGTH + VALUE_SIZE_LENGTH;
 
     /**
      * The amount of overhead bytes in a record
+     * crc+magic+attributes+timestamp+key_size+value_size
      */
     public static final int RECORD_OVERHEAD_V1 = HEADER_SIZE_V1 + KEY_SIZE_LENGTH + VALUE_SIZE_LENGTH;
 
@@ -423,8 +427,21 @@ public final class LegacyRecord {
                              ByteBuffer value,
                              CompressionType compressionType,
                              TimestampType timestampType) throws IOException {
+        // 计算attributes
         byte attributes = computeAttributes(magic, compressionType, timestampType);
+        // 计算crc值
         long crc = computeChecksum(magic, attributes, timestamp, key, value);
+        /**
+		 * 写入：
+         * 1. crc
+         * 2. magic
+         * 3. attributes
+         * 4. timestamp
+         * 5. key_size
+         * 6. key
+         * 7. value_size
+         * 8. value
+         */
         write(out, magic, crc, attributes, timestamp, key, value);
         return crc;
     }
@@ -455,7 +472,16 @@ public final class LegacyRecord {
             throw new IllegalArgumentException("Invalid magic value " + magic);
         if (timestamp < 0 && timestamp != RecordBatch.NO_TIMESTAMP)
             throw new IllegalArgumentException("Invalid message timestamp " + timestamp);
-
+        /**
+         * 1. crc
+         * 2. magic
+		 * 3. attributes
+         * 4. timestamp
+         * 5. key_size
+         * 6. key
+         * 7. value_size
+         * 8. value
+         */
         // write crc
         out.writeInt((int) (crc & 0xffffffffL));
         // write magic value
@@ -490,6 +516,9 @@ public final class LegacyRecord {
     }
 
     public static int recordSize(byte magic, int keySize, int valueSize) {
+        /**
+         * 实际组成：crc+magic+attributes+timestamp+key_size+value_size+ key值 + value值
+         */
         return recordOverhead(magic) + keySize + valueSize;
     }
 

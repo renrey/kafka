@@ -85,6 +85,9 @@ class LogManager(logDirs: Seq[File],
   // Each element in the queue contains the log object to be deleted and the time it is scheduled for deletion.
   private val logsToBeDeleted = new LinkedBlockingQueue[(Log, Long)]()
 
+  /**
+   * 创建配置指定的log目录（log.dirs多个，log.dir只有一个）
+   */
   private val _liveLogDirs: ConcurrentLinkedQueue[File] = createAndValidateLogDirs(logDirs, initialOfflineDirs)
   @volatile private var _currentDefaultConfig = initialDefaultConfig
   @volatile private var numRecoveryThreadsPerDataDir = recoveryThreadsPerDataDir
@@ -112,6 +115,7 @@ class LogManager(logDirs: Seq[File],
   private val dirLocks = lockLogDirs(liveLogDirs)
   @volatile private var recoveryPointCheckpoints = liveLogDirs.map(dir =>
     (dir, new OffsetCheckpointFile(new File(dir, RecoveryPointCheckpointFile), logDirFailureChannel))).toMap
+  // 遍历所有指定的log目录，获取log目录中log-start-offset-checkpoint文件
   @volatile private var logStartOffsetCheckpoints = liveLogDirs.map(dir =>
     (dir, new OffsetCheckpointFile(new File(dir, LogStartOffsetCheckpointFile), logDirFailureChannel))).toMap
 
@@ -123,6 +127,9 @@ class LogManager(logDirs: Seq[File],
     logDirsSet
   }
 
+  /**
+   * 磁盘清理
+   */
   @volatile private var _cleaner: LogCleaner = _
   private[kafka] def cleaner: LogCleaner = _cleaner
 
@@ -255,17 +262,23 @@ class LogManager(logDirs: Seq[File],
   // Only for testing
   private[log] def hasLogsToBeDeleted: Boolean = !logsToBeDeleted.isEmpty
 
-  private[log] def loadLog(logDir: File,
+  private[log] def  loadLog(logDir: File,
                            hadCleanShutdown: Boolean,
                            recoveryPoints: Map[TopicPartition, Long],
                            logStartOffsets: Map[TopicPartition, Long],
                            defaultConfig: LogConfig,
                            topicConfigOverrides: Map[String, LogConfig]): Log = {
+    // 读取目录名称：topic-分区序号
     val topicPartition = Log.parseTopicPartitionName(logDir)
     val config = topicConfigOverrides.getOrElse(topicPartition.topic, defaultConfig)
+    /**
+     * recoveryPointCheckpoints、logStartOffsetCheckpoints 从现有文件读取，如果没有，默认是0
+     */
     val logRecoveryPoint = recoveryPoints.getOrElse(topicPartition, 0L)
     val logStartOffset = logStartOffsets.getOrElse(topicPartition, 0L)
-
+    /**
+     * 创建log（分区的当前segment）
+     */
     val log = Log(
       dir = logDir,
       config = config,
@@ -284,11 +297,18 @@ class LogManager(logDirs: Seq[File],
     if (logDir.getName.endsWith(Log.DeleteDirSuffix)) {
       addLogToBeDeleted(log)
     } else {
+      // 返回之前的log
       val previous = {
+        /**
+         * 放入创建的log
+         */
         if (log.isFuture)
           this.futureLogs.put(topicPartition, log)
-        else
+        else {
+          // 一般这里
+          // 分区当前用到的log文件
           this.currentLogs.put(topicPartition, log)
+        }
       }
       if (previous != null) {
         if (log.isFuture)
@@ -310,15 +330,19 @@ class LogManager(logDirs: Seq[File],
   private[log] def loadLogs(defaultConfig: LogConfig, topicConfigOverrides: Map[String, LogConfig]): Unit = {
     info(s"Loading logs from log dirs $liveLogDirs")
     val startMs = time.hiResClockMs()
-    val threadPools = ArrayBuffer.empty[ExecutorService]
+    val threadPools = ArrayBuffer.empty[ExecutorService] // 线程池
     val offlineDirs = mutable.Set.empty[(String, IOException)]
     val jobs = ArrayBuffer.empty[Seq[Future[_]]]
     var numTotalLogs = 0
 
+    /**
+     * 遍历log目录（log.dirs多个或者log.dir单个），
+     */
     for (dir <- liveLogDirs) {
       val logDirAbsolutePath = dir.getAbsolutePath
       var hadCleanShutdown: Boolean = false
       try {
+        // 创建线程池，数量io.thread
         val pool = Executors.newFixedThreadPool(numRecoveryThreadsPerDataDir,
           KafkaThread.nonDaemon(s"log-recovery-$logDirAbsolutePath", _))
         threadPools.append(pool)
@@ -344,26 +368,37 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting the recovery checkpoint to 0", e)
         }
 
+        // 每个分区的开始offset
         var logStartOffsets = Map[TopicPartition, Long]()
         try {
+          // 获取当前log目录下的log-start-offset-checkpoint文件，并读取offset
+          // logStartOffsetCheckpoints(dir)=logStartOffsetCheckpoints.get(dir)
           logStartOffsets = this.logStartOffsetCheckpoints(dir).read()
         } catch {
           case e: Exception =>
             warn(s"Error occurred while reading log-start-offset-checkpoint file of directory " +
               s"$logDirAbsolutePath, resetting to the base offset of the first segment", e)
         }
-
+        /**
+         * 获取当前log目录下所有子目录（分区）
+         */
         val logsToLoad = Option(dir.listFiles).getOrElse(Array.empty).filter(logDir =>
           logDir.isDirectory && Log.parseTopicPartitionName(logDir).topic != KafkaRaftServer.MetadataTopic)
         val numLogsLoaded = new AtomicInteger(0)
         numTotalLogs += logsToLoad.length
 
+        /**
+         * 遍历当前log目录下的子目录（分区）
+         */
         val jobsForDir = logsToLoad.map { logDir =>
           val runnable: Runnable = () => {
             try {
               debug(s"Loading log $logDir")
 
               val logLoadStartMs = time.hiResClockMs()
+              /**
+               * loadLog创建（分区）log
+               */
               val log = loadLog(logDir, hadCleanShutdown, recoveryPoints, logStartOffsets,
                 defaultConfig, topicConfigOverrides)
               val logLoadDurationMs = time.hiResClockMs() - logLoadStartMs
@@ -379,7 +414,7 @@ class LogManager(logDirs: Seq[File],
           }
           runnable
         }
-
+        // 提交任务
         jobs += jobsForDir.map(pool.submit)
       } catch {
         case e: IOException =>
@@ -453,6 +488,9 @@ class LogManager(logDirs: Seq[File],
 
   // visible for testing
   private[log] def startupWithConfigOverrides(defaultConfig: LogConfig, topicConfigOverrides: Map[String, LogConfig]): Unit = {
+    /**
+     * 加载日志
+     */
     loadLogs(defaultConfig, topicConfigOverrides) // this could take a while if shutdown was not clean
 
     /* Schedule the cleanup task to delete old logs */
@@ -693,10 +731,14 @@ class LogManager(logDirs: Seq[File],
    */
   private def checkpointLogStartOffsetsInDir(logDir: File, logsToCheckpoint: Map[TopicPartition, Log]): Unit = {
     try {
+      // log目录下的log-start-offset-checkpoint内容
       logStartOffsetCheckpoints.get(logDir).foreach { checkpoint =>
+        // 遍历每个分区log
         val logStartOffsets = logsToCheckpoint.collect {
+              // 分区log的logStartOffset（初始是0）> 当前分区的第一个Segment的开始offset，则为logStartOffset
           case (tp, log) if log.logStartOffset > log.logSegments.head.baseOffset => tp -> log.logStartOffset
         }
+        // 覆盖原来的log-start-offset-checkpoint文件
         checkpoint.write(logStartOffsets)
       }
     } catch {
@@ -1266,8 +1308,12 @@ object LogManager {
     LogConfig.validateValues(defaultProps)
     val defaultLogConfig = LogConfig(defaultProps)
 
+    /**
+     * 清理磁盘配置
+     */
     val cleanerConfig = LogCleaner.cleanerConfig(config)
 
+    // 创建LogManager
     new LogManager(logDirs = config.logDirs.map(new File(_).getAbsoluteFile),
       initialOfflineDirs = initialOfflineDirs.map(new File(_).getAbsoluteFile),
       configRepository = configRepository,

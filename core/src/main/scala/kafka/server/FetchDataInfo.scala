@@ -25,7 +25,7 @@ case object FetchLogEnd extends FetchIsolation
 case object FetchHighWatermark extends FetchIsolation
 case object FetchTxnCommitted extends FetchIsolation
 
-case class FetchDataInfo(fetchOffsetMetadata: LogOffsetMetadata,
-                         records: Records,
+case class FetchDataInfo(fetchOffsetMetadata: LogOffsetMetadata, // 拉取offset的元数据
+                         records: Records, // 拉取offset开始的消息，就是本次拉取到的消息
                          firstEntryIncomplete: Boolean = false,
                          abortedTransactions: Option[List[FetchResponseData.AbortedTransaction]] = None)

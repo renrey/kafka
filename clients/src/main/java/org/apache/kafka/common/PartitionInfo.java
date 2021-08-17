@@ -22,10 +22,10 @@ package org.apache.kafka.common;
 public class PartitionInfo {
     private final String topic;
     private final int partition;
-    private final Node leader;
-    private final Node[] replicas;
-    private final Node[] inSyncReplicas;
-    private final Node[] offlineReplicas;
+    private final Node leader; // leader broker
+    private final Node[] replicas; // 副本的broker
+    private final Node[] inSyncReplicas; // isr的broker
+    private final Node[] offlineReplicas; // 未进isr的broker
 
     public PartitionInfo(String topic, int partition, Node leader, Node[] replicas, Node[] inSyncReplicas) {
         this(topic, partition, leader, replicas, inSyncReplicas, new Node[0]);

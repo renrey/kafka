@@ -98,6 +98,9 @@ object RequestChannel extends Logging {
 
     val session = Session(context.principal, context.clientAddress)
 
+    /**
+     * 二进制转换成Request对象
+     */
     private val bodyAndSize: RequestAndSize = context.parseRequest(buffer)
 
     // This is constructed on creation of a Request so that the JSON representation is computed before the request is
@@ -339,7 +342,7 @@ class RequestChannel(val queueSize: Int,
                      time: Time,
                      val metrics: RequestChannel.Metrics) extends KafkaMetricsGroup {
   import RequestChannel._
-  private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)
+  private val requestQueue = new ArrayBlockingQueue[BaseRequest](queueSize)  // 默认500个
   private val processors = new ConcurrentHashMap[Int, Processor]()
   val requestQueueSizeMetricName = metricNamePrefix.concat(RequestQueueSizeMetric)
   val responseQueueSizeMetricName = metricNamePrefix.concat(ResponseQueueSizeMetric)
@@ -440,6 +443,9 @@ class RequestChannel(val queueSize: Int,
     val processor = processors.get(response.processor)
     // The processor may be null if it was shutdown. In this case, the connections
     // are closed, so the response is dropped.
+    /**
+     * 放入对应Processor的responseQueue中
+     */
     if (processor != null) {
       processor.enqueueResponse(response)
     }

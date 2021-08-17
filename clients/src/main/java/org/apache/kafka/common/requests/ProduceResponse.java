@@ -82,6 +82,9 @@ public class ProduceResponse extends AbstractResponse {
 
     private static ProduceResponseData toData(Map<TopicPartition, PartitionResponse> responses, int throttleTimeMs) {
         ProduceResponseData data = new ProduceResponseData().setThrottleTimeMs(throttleTimeMs);
+        /**
+         * 生成每个分区的响应
+         */
         responses.forEach((tp, response) -> {
             ProduceResponseData.TopicProduceResponse tpr = data.responses().find(tp.topic());
             if (tpr == null) {

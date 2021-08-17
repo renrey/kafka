@@ -123,11 +123,13 @@ public abstract class AbstractRecords implements Records {
      */
     public static int estimateSizeInBytesUpperBound(byte magic, CompressionType compressionType, ByteBuffer key,
                                                     ByteBuffer value, Header[] headers) {
+        // v2版本
         if (magic >= RecordBatch.MAGIC_VALUE_V2)
             return DefaultRecordBatch.estimateBatchSizeUpperBound(key, value, headers);
         else if (compressionType != CompressionType.NONE)
             return Records.LOG_OVERHEAD + LegacyRecord.recordOverhead(magic) + LegacyRecord.recordSize(magic, key, value);
         else
+            // 日志前缀大小 + 消息大小
             return Records.LOG_OVERHEAD + LegacyRecord.recordSize(magic, key, value);
     }
 

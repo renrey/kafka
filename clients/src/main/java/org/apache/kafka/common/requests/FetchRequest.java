@@ -54,7 +54,7 @@ public class FetchRequest extends AbstractRequest {
     private final FetchMetadata metadata;
 
     public static final class PartitionData {
-        public final long fetchOffset;
+        public final long fetchOffset; //需要获取的起始offset
         public final long logStartOffset;
         public final int maxBytes;
         public final Optional<Integer> currentLeaderEpoch;

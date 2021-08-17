@@ -39,8 +39,8 @@ object LogOffsetMetadata {
  *  3. the physical position on the located segment
  */
 case class LogOffsetMetadata(messageOffset: Long,
-                             segmentBaseOffset: Long = Log.UnknownOffset,
-                             relativePositionInSegment: Int = LogOffsetMetadata.UnknownFilePosition) {
+                             segmentBaseOffset: Long = Log.UnknownOffset, // segment的起始offset
+                             relativePositionInSegment: Int = LogOffsetMetadata.UnknownFilePosition) {// 距离segment起始offset的差值
 
   // check if this offset is already on an older segment compared with the given offset
   def onOlderSegment(that: LogOffsetMetadata): Boolean = {

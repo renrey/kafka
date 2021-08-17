@@ -38,6 +38,9 @@ public class NetworkSend implements Send {
 
     @Override
     public long writeTo(TransferableChannel channel) throws IOException {
+        /**
+         * @see ByteBufferSend#writeTo(org.apache.kafka.common.network.TransferableChannel)
+         */
         return send.writeTo(channel);
     }
 
