@@ -97,6 +97,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
         ApiKeys apiKey = requestHeader.apiKey();
         short apiVersion = requestHeader.apiVersion();
 
+        // 转换header
         ResponseHeader responseHeader = ResponseHeader.parse(buffer, apiKey.responseHeaderVersion(apiVersion));
 
         if (requestHeader.correlationId() != responseHeader.correlationId()) {
@@ -106,6 +107,7 @@ public abstract class AbstractResponse implements AbstractRequestResponse {
                 requestHeader.correlationId(), responseHeader.correlationId());
         }
 
+        // 转换响应对象
         return AbstractResponse.parseResponse(apiKey, buffer, apiVersion);
     }
 

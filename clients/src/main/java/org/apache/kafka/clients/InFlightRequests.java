@@ -158,7 +158,9 @@ final class InFlightRequests {
 
     private Boolean hasExpiredRequest(long now, Deque<NetworkClient.InFlightRequest> deque) {
         for (NetworkClient.InFlightRequest request : deque) {
+            // 已经发送的时长
             long timeSinceSend = Math.max(0, now - request.sendTimeMs);
+            // 超时判断
             if (timeSinceSend > request.requestTimeoutMs)
                 return true;
         }
@@ -173,9 +175,11 @@ final class InFlightRequests {
      */
     public List<String> nodesWithTimedOutRequests(long now) {
         List<String> nodeIds = new ArrayList<>();
+        // 遍历每个broker的请求队列
         for (Map.Entry<String, Deque<NetworkClient.InFlightRequest>> requestEntry : requests.entrySet()) {
             String nodeId = requestEntry.getKey();
             Deque<NetworkClient.InFlightRequest> deque = requestEntry.getValue();
+            // 判断队列是否有请求超时了
             if (hasExpiredRequest(now, deque))
                 nodeIds.add(nodeId);
         }

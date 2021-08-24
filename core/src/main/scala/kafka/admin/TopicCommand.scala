@@ -59,6 +59,7 @@ object TopicCommand extends Logging {
 
     var exitCode = 0
     try {
+      // 创建topic
       if (opts.hasCreateOption)
         topicService.createTopic(opts)
       else if (opts.hasAlterOption)
@@ -384,8 +385,10 @@ object TopicCommand extends Logging {
     override def createTopic(topic: CommandTopicPartition): Unit = {
       val adminZkClient = new AdminZkClient(zkClient)
       try {
+        // 手动分配
         if (topic.hasReplicaAssignment)
           adminZkClient.createTopicWithAssignment(topic.name, topic.configsToAdd, topic.replicaAssignment.get)
+        // 一般自动分配
         else
           adminZkClient.createTopic(topic.name, topic.partitions.get, topic.replicationFactor.get, topic.configsToAdd, topic.rackAwareMode)
         println(s"Created topic ${topic.name}.")

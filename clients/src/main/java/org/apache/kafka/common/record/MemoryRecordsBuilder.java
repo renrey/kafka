@@ -166,6 +166,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
                                 boolean isControlBatch,
                                 int partitionLeaderEpoch,
                                 int writeLimit) {
+        // buffer外
         this(new ByteBufferOutputStream(buffer), magic, compressionType, timestampType, baseOffset, logAppendTime,
                 producerId, producerEpoch, baseSequence, isTransactional, isControlBatch, partitionLeaderEpoch,
                 writeLimit);
@@ -781,6 +782,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * re-allocation in the underlying byte buffer stream.
      */
     public boolean hasRoomFor(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
+        // 判断是否batch已满
         if (isFull())
             return false;
 
@@ -808,6 +810,10 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     public boolean isFull() {
         // note that the write limit is respected only after the first record is added which ensures we can always
         // create non-empty batches (this is used to disable batching when the producer's batch size is set to 0).
+        /**
+         * appendStream == CLOSED_STREAM：就是对batch执行close操作
+         *
+         */
         return appendStream == CLOSED_STREAM || (this.numRecords > 0 && this.writeLimit <= estimatedBytesWritten());
     }
 
@@ -816,6 +822,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * is exactly correct if the record set is not compressed or if the builder has been closed.
      */
     public int estimatedSizeInBytes() {
+        // 默认null
         return builtRecords != null ? builtRecords.sizeInBytes() : estimatedBytesWritten();
     }
 

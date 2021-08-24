@@ -42,6 +42,12 @@ object AdminUtils extends Logging {
    * <li> Assign the first replica of each partition by round-robin, starting from a random position in the broker list.</li>
    * <li> Assign the remaining replicas of each partition with an increasing shift.</li>
    * </ol>
+   * 不考虑rack的情况：
+   * 每个分区的第一个replica通过轮询（round-robin）分配，从broker列表中的随机位置开始
+   * 剩余的replica是通过不断递增的。
+   * 如下面：
+   * 1st replica都是按broker轮询的。
+   * 1st replica-2nd replica、2nd replica-3nd replica 的差距都相同，且是递增的。
    *
    * Here is an example of assigning
    * <table cellpadding="2" cellspacing="2">
@@ -111,6 +117,7 @@ object AdminUtils extends Logging {
       throw new InvalidReplicationFactorException("Replication factor must be larger than 0.")
     if (replicationFactor > brokerMetadatas.size)
       throw new InvalidReplicationFactorException(s"Replication factor: $replicationFactor larger than available brokers: ${brokerMetadatas.size}.")
+    // 非rack分配
     if (brokerMetadatas.forall(_.rack.isEmpty))
       assignReplicasToBrokersRackUnaware(nPartitions, replicationFactor, brokerMetadatas.map(_.id), fixedStartIndex,
         startPartitionId)

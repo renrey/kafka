@@ -167,7 +167,9 @@ public class Sender implements Runnable {
     }
 
     private void maybeRemoveAndDeallocateBatch(ProducerBatch batch) {
+        // 1. 从inFlightBatches移除这个请求
         maybeRemoveFromInflightBatches(batch);
+        // 2. 释放ByteBuffer
         this.accumulator.deallocate(batch);
     }
 
@@ -323,16 +325,28 @@ public class Sender implements Runnable {
         }
 
         long currentTimeMs = time.milliseconds();
+        /**
+         * accumulator 包装下一次需要发送的batch，
+         */
         long pollTimeout = sendProducerData(currentTimeMs);
+        /**
+         * NetworkClient 网络相关操作（建立连接、发送、接收响应）
+         */
         client.poll(pollTimeout, currentTimeMs);
     }
 
     private long sendProducerData(long now) {
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
+        /**
+         * 生成可以发送batch的broker（校验时是校验batch是否可以发送）
+         */
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
+        /**
+         * 内存中未知leader的topic，更新拉取标志
+         */
         if (!result.unknownLeaderTopics.isEmpty()) {
             // The set of topics with unknown leader contains topics with leader election pending as well as
             // topics which may have expired. Add the topic again to metadata to ensure it is included
@@ -342,14 +356,19 @@ public class Sender implements Runnable {
 
             log.debug("Requesting metadata update due to unknown leader topics from the batched records: {}",
                 result.unknownLeaderTopics);
+            // 更新为全量拉取
             this.metadata.requestUpdate();
         }
 
         // remove any nodes we aren't ready to send to
+        /**
+         * 清除刚刚获取的batch是否可以发送
+         */
         Iterator<Node> iter = result.readyNodes.iterator();
         long notReadyTimeout = Long.MAX_VALUE;
         while (iter.hasNext()) {
             Node node = iter.next();
+            // ready校验，其中会建立连接
             if (!this.client.ready(node, now)) {
                 iter.remove();
                 notReadyTimeout = Math.min(notReadyTimeout, this.client.pollDelayMs(node, now));
@@ -357,6 +376,9 @@ public class Sender implements Runnable {
         }
 
         // create produce requests
+        /**
+         * 创建给每个broker需要发送的batch列表 （一个broker可能是多个partition的leader，上面的获取的时间只是返回了broker）
+         */
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(cluster, result.readyNodes, this.maxRequestSize, now);
         addToInflightBatches(batches);
         if (guaranteeMessageOrder) {
@@ -368,7 +390,9 @@ public class Sender implements Runnable {
         }
 
         accumulator.resetNextBatchExpiryTime();
+        // inflightBatches中已超时的
         List<ProducerBatch> expiredInflightBatches = getExpiredInflightBatches(now);
+        // 待发送的batches中已超时的
         List<ProducerBatch> expiredBatches = this.accumulator.expiredBatches(now);
         expiredBatches.addAll(expiredInflightBatches);
 
@@ -377,6 +401,9 @@ public class Sender implements Runnable {
         // we need to reset the producer id here.
         if (!expiredBatches.isEmpty())
             log.trace("Expired {} batches in accumulator", expiredBatches.size());
+        /**
+         * 处理过期batch
+         */
         for (ProducerBatch expiredBatch : expiredBatches) {
             String errorMessage = "Expiring " + expiredBatch.recordCount + " record(s) for " + expiredBatch.topicPartition
                 + ":" + (now - expiredBatch.createdMs) + " ms has passed since batch creation";
@@ -404,6 +431,7 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
+        // 生成Request
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -611,6 +639,7 @@ public class Sender implements Runnable {
             maybeRemoveAndDeallocateBatch(batch);
             this.sensors.recordBatchSplit();
         } else if (error != Errors.NONE) {
+            // 错误重试
             if (canRetry(batch, response, now)) {
                 log.warn(
                     "Got error produce response with correlation id {} on topic-partition {}, retrying ({} attempts left). Error: {}",
@@ -715,6 +744,9 @@ public class Sender implements Runnable {
      * future batches are certain to fail with an OutOfOrderSequence exception.
      */
     private boolean canRetry(ProducerBatch batch, ProduceResponse.PartitionResponse response, long now) {
+        // 1.是否提交超时delivery.timeout.ms
+        // 2. 是否超出重试次数retries
+        // 3. 请求是否已完成（有无更新finalState）
         return !batch.hasReachedDeliveryTimeout(accumulator.getDeliveryTimeoutMs(), now) &&
             batch.attempts() < this.retries &&
             !batch.isDone() &&
@@ -785,8 +817,10 @@ public class Sender implements Runnable {
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         String nodeId = Integer.toString(destination);
+        // 请求对象
         ClientRequest clientRequest = client.newClientRequest(nodeId, requestBuilder, now, acks != 0,
                 requestTimeoutMs, callback);
+        // 往networkClient提交本次请求
         client.send(clientRequest, now);
         log.trace("Sent produce request to {}: {}", nodeId, requestBuilder);
     }

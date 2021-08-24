@@ -994,6 +994,9 @@ public final class Utils {
      * @return a positive number.
      */
     public static int toPositive(int number) {
+        // 0x7fffffff：int最大值，第一位0（符号），后31位1
+        // &：保证得到的数是正数，第一位肯定是0，且其他位不会变（0&1=0，1&1=1）
+        // 就是得出number的绝对值（正数）
         return number & 0x7fffffff;
     }
 

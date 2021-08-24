@@ -47,7 +47,9 @@ public class PlaintextTransportLayer implements TransportLayer {
 
     @Override
     public boolean finishConnect() throws IOException {
+        // 1. java nio socketChannel完成建立连接
         boolean connected = socketChannel.finishConnect();
+        // 2. 取消监听OP_CONNECT，新增监听OP_READ
         if (connected)
             key.interestOps(key.interestOps() & ~SelectionKey.OP_CONNECT | SelectionKey.OP_READ);
         return connected;

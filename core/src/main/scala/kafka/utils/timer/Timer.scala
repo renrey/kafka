@@ -64,8 +64,8 @@ class SystemTimer(executorName: String,
   private[this] val delayQueue = new DelayQueue[TimerTaskList]()
   private[this] val taskCounter = new AtomicInteger(0)
   private[this] val timingWheel = new TimingWheel(
-    tickMs = tickMs,
-    wheelSize = wheelSize,
+    tickMs = tickMs, // 1ms
+    wheelSize = wheelSize, //20
     startMs = startMs,
     taskCounter = taskCounter,
     delayQueue

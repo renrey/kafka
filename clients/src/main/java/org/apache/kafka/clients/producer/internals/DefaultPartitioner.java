@@ -64,10 +64,12 @@ public class DefaultPartitioner implements Partitioner {
      */
     public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster,
                          int numPartitions) {
+        // 没指定key，一般不指定，使用stickyPartition的方式
         if (keyBytes == null) {
             return stickyPartitionCache.partition(topic, cluster);
         }
         // hash the keyBytes to choose a partition
+        // 有指定key，下标：对key进行32位的murmur2 hash 的绝对值（正数） % 总分区数
         return Utils.toPositive(Utils.murmur2(keyBytes)) % numPartitions;
     }
 
@@ -76,6 +78,7 @@ public class DefaultPartitioner implements Partitioner {
     /**
      * If a batch completed for the current sticky partition, change the sticky partition. 
      * Alternately, if no sticky partition has been determined, set one.
+     * 一般在一个batch完成时，更换一个新的分区（与上一个分区不一样）
      */
     public void onNewBatch(String topic, Cluster cluster, int prevPartition) {
         stickyPartitionCache.nextPartition(topic, cluster, prevPartition);

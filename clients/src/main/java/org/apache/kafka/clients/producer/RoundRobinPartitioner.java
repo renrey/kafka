@@ -53,12 +53,23 @@ public class RoundRobinPartitioner implements Partitioner {
     public int partition(String topic, Object key, byte[] keyBytes, Object value, byte[] valueBytes, Cluster cluster) {
         List<PartitionInfo> partitions = cluster.partitionsForTopic(topic);
         int numPartitions = partitions.size();
+        // 获取上次自增的值（从0开始）作为本次的目标分区，然后自增
         int nextValue = nextValue(topic);
         List<PartitionInfo> availablePartitions = cluster.availablePartitionsForTopic(topic);
+        /**
+         * 其实就是有个自增值nextValue
+         * 简单地说nextValue使用分区数进行取余，得出的下标肯定+1
+         * 有可用分区时，是使用可用分区数进行取余，然后得出的下标在availablePartitions可用分区的位置
+         * 而没可用分区，就是全部分区数，得出的下标就是在全部分区的位置
+         */
+        // 有可用分区
         if (!availablePartitions.isEmpty()) {
+            // availablePartitions中，下标为nextValvue绝对值%可用分区数的分区
             int part = Utils.toPositive(nextValue) % availablePartitions.size();
             return availablePartitions.get(part).partition();
+        // 无可用分区
         } else {
+            // 分区序号为nextValvue绝对值%所有分区数的分区
             // no partitions are available, give a non-available partition
             return Utils.toPositive(nextValue) % numPartitions;
         }
