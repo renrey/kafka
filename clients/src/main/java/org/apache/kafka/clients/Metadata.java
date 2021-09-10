@@ -515,10 +515,16 @@ public class Metadata implements Closeable {
 
         // Perform a partial update only if a full update hasn't been requested, and the last successful
         // hasn't exceeded the metadata refresh time.
+        /**
+         * 未更新全量标志=true 并且 上次成功时间不超过metadataExpireMs，就可以进行增量拉取
+         * 就是有线程设置全量更新或者 超出上次成功时间，就会进行全量拉取
+         */
         if (!this.needFullUpdate && this.lastSuccessfulRefreshMs + this.metadataExpireMs > nowMs) {
+            // 增量请求，
             request = newMetadataRequestBuilderForNewTopics();
             isPartialUpdate = true;
         }
+        // 全量请求
         if (request == null) {
             request = newMetadataRequestBuilder();
             isPartialUpdate = false;

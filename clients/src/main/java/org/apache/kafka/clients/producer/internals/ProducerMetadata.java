@@ -65,6 +65,11 @@ public class ProducerMetadata extends Metadata {
     }
 
     public synchronized void add(String topic, long nowMs) {
+        /**
+         * 两个入口：
+         * 1. 往prodcuer提交消息
+         * 2. 进行生成可以发送batch的分区后，对未知的分区信息的topic进行拉取
+         */
         Objects.requireNonNull(topic, "topic cannot be null");
         if (topics.put(topic, nowMs + metadataIdleMs) == null) {
             newTopics.add(topic);

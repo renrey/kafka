@@ -271,8 +271,8 @@ public abstract class AbstractLegacyRecordBatch extends AbstractRecordBatch impl
     }
 
     static void writeHeader(DataOutputStream out, long offset, int size) throws IOException {
-        out.writeLong(offset);
-        out.writeInt(size);
+        out.writeLong(offset); // 8字节offset
+        out.writeInt(size); // 4字节size
     }
 
     private static final class DataLogInputStream implements LogInputStream<AbstractLegacyRecordBatch> {

@@ -75,11 +75,13 @@ public final class LegacyRecord {
     /**
      * Specifies the mask for the compression code. 3 bits to hold the compression codec. 0 is reserved to indicate no
      * compression
+     * 后面3个1
      */
     private static final int COMPRESSION_CODEC_MASK = 0x07;
 
     /**
      * Specify the mask of timestamp type: 0 for CreateTime, 1 for LogAppendTime.
+     * 后面4个1
      */
     private static final byte TIMESTAMP_TYPE_MASK = 0x08;
 
@@ -423,8 +425,11 @@ public final class LegacyRecord {
                              ByteBuffer value,
                              CompressionType compressionType,
                              TimestampType timestampType) throws IOException {
+        // 计算header中的attributes （1个字节），其实就是时间戳的类型
         byte attributes = computeAttributes(magic, compressionType, timestampType);
+        // 计算crc，就是用crc32计算checksum，拿来判断接收的消息是否与发送的一样
         long crc = computeChecksum(magic, attributes, timestamp, key, value);
+        // 把消息写入流（ByteBuffer）中
         write(out, magic, crc, attributes, timestamp, key, value);
         return crc;
     }
@@ -490,21 +495,40 @@ public final class LegacyRecord {
     }
 
     public static int recordSize(byte magic, int keySize, int valueSize) {
+        /**
+         * 实际消息的组成：
+         * header
+         * crc(4) + magic(1) + attributes(1) + timestamp(8，v1才有)
+         * key_size：4
+         * value_size:4
+         * key
+         * value
+         */
         return recordOverhead(magic) + keySize + valueSize;
     }
 
     // visible only for testing
     public static byte computeAttributes(byte magic, CompressionType type, TimestampType timestampType) {
         byte attributes = 0;
+        // 有使用压缩时，执行
         if (type.id > 0)
+            // 100、001、010、011
+            // 1. &：把id转成byte类型, 后三位不变
+            // 2. | : 0|id，原来1的都变0，就是得到0
             attributes |= COMPRESSION_CODEC_MASK & type.id;
+        // v1、v2
         if (magic > RecordBatch.MAGIC_VALUE_V0) {
             if (timestampType == TimestampType.NO_TIMESTAMP_TYPE)
                 throw new IllegalArgumentException("Timestamp type must be provided to compute attributes for " +
                         "message format v1");
+            // 默认是CREATE_TIME，,就是00000000
+            // LOG_APPEND_TIME时，就是00001111
             if (timestampType == TimestampType.LOG_APPEND_TIME)
                 attributes |= TIMESTAMP_TYPE_MASK;
         }
+        /**
+         * 实际attributes就是时间戳类型，不是等于0就是LOG_APPEND_TIME，等于0就是CREATE_TIME
+         */
         return attributes;
     }
 
@@ -542,6 +566,15 @@ public final class LegacyRecord {
     }
 
     static int recordOverhead(byte magic) {
+        /**
+         * 消息头
+         * header长度：
+         * crc(4) + magic(1) + attributes(1) + timestamp(8，v1才有)
+         * key_size长度：4
+         * value_size长度:4
+         * 就是v0：14字节
+         * v1：22字节
+         */
         if (magic == 0)
             return RECORD_OVERHEAD_V0;
         else if (magic == 1)

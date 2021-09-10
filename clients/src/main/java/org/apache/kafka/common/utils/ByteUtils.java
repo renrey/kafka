@@ -243,13 +243,26 @@ public final class ByteUtils {
         long value = 0L;
         int i = 0;
         long b;
+        // 获取字节8位（第一位不是0进入）
         while (((b = buffer.get()) & 0x80) != 0) {
+            // 不是全部等于0
+            // 后7位1 & 8位字节b：0XXXXX ，后7位不变，第一个0 （因为还原到的value，原先都是0，只要能保持0就可以）
+            // << i ：移动当数字对应的位置
+            // value| = 累加value，因为0|X=X，等于对应位置已还原回对应数字
             value |= (b & 0x7f) << i;
+            // 位置+7
             i += 7;
             if (i > 63)
                 throw illegalVarlongException(value);
         }
+        // 把最后一个字节（第一位是0）也还原到value，也就是已经发送前的值，varint还原完成
         value |= b << i;
+        //zig-zag解码
+        // value >>> 1 : 移除末尾的符号位，且把31位的数字移动回后31位
+        // value & 00..01: 保留末尾符号的值，其他全为0 ， 即00...1(负数)或者000..0（正数）
+        // -（value &1 ）：取反+1 ，所以负数：1111..111 , 正数00..00
+        // ^ : 正数(全部0)：不变，还是value >>> 1的值
+        // 负数（全部1）：全部取反，即1XXXX...X
         return (value >>> 1) ^ -(value & 1);
     }
 
@@ -295,15 +308,34 @@ public final class ByteUtils {
      * <a href="http://code.google.com/apis/protocolbuffers/docs/encoding.html"> Google Protocol Buffers</a>
      * into the buffer.
      *
+     * 变长整型varint：
+     *  作用：
+     *  就是可以用可变数量的byte字节来表示一个int，（可能1个byte、可能3个），减少传输的字节
+     *  原因：
+     *  因为一个比较小的正数，正常32位前面基本都是0，这样可以压缩前面重复的0，所以数字越小需要的byte越小，
+     *  使用：
+     *  每个字节的第一位为msb用来判断当前字节是否用来与下一个字节表示一个数，1代表一起同一个数，0的话，就代表当前字节就是这个数最后的一个，下一个字节就是用来表示这个数
+     *  每个字节的后7位就是原始数据
+     *  varint字节的顺序其实是小端字节序（原始值的字节倒序），就是其实是把原始值的后面byte放到了前面，因此解析varint需要翻转
+     *  缺点：
+     *  只能对正数有优化，负数第一位就是1，不可能压缩
+     *
+     *
      * @param value The value to write
      * @param out The output to write to
+     *
      */
     public static void writeUnsignedVarint(int value, DataOutput out) throws IOException {
+        // 数值（绝对值）不等于0
         while ((value & 0xffffff80) != 0L) {
+            // 1. value & 0111 1111（7位1）：value后7位不变，就拿到value的后7位，前面都是0, 0XXX XXXX
+            // 2. 0XXX XXXX | 1000 0000 : 1XXX XXXX ，第一位1，后7位是value后7位
             byte b = (byte) ((value & 0x7f) | 0x80);
             out.writeByte(b);
+            // 右移7位，把已经写入的7位去掉，下次又写入7位
             value >>>= 7;
         }
+        // 最后一定会写入0的字节（0000 0000），代表这个数终止
         out.writeByte((byte) value);
     }
 
@@ -311,11 +343,23 @@ public final class ByteUtils {
      * Write the given integer following the variable-length zig-zag encoding from
      * <a href="http://code.google.com/apis/protocolbuffers/docs/encoding.html"> Google Protocol Buffers</a>
      * into the output.
+     * 使用varint 和 zig-zag 对value进行编码压缩
      *
+     * zig-zag：对负数（第一位1，剩下的是绝对值的反码再补码（+1））优化，使得负数变成正数的形式（首位不等于1），可以进行varint的优化
+     *          并且对正数处理不会有变化
+     * 因此先对value进行zig-zag处理，再进行
      * @param value The value to write
      * @param out The output to write to
      */
     public static void writeVarint(int value, DataOutput out) throws IOException {
+        // (value << 1) ^ (value >> 31)就是zig-zag的处理
+        /**
+         * (value << 1) ^ (value >> 31)：
+         * 正数: XXXX...0 ^ 0000...0(高位补0) = 后31位放到了前31位，最后一位0 基本没变
+         * 负数：XXXX...0 ^ 1111...1（高位补1）= 后31放到前31位，并取反，最后一位1
+         * 实际得到数就是把符号位放在了后面，原后31位放在前面31位（就是值）
+         * 而负数会把那31位的值进行取反，正数则没变化
+         */
         writeUnsignedVarint((value << 1) ^ (value >> 31), out);
     }
 
@@ -335,13 +379,20 @@ public final class ByteUtils {
      * Write the given integer following the variable-length zig-zag encoding from
      * <a href="http://code.google.com/apis/protocolbuffers/docs/encoding.html"> Google Protocol Buffers</a>
      * into the output.
+     * 不只是使用varint，还是用zig-zag进行编码
+     * zig-zag：主要为了负数时的压缩，因为负数第一位就是1
      *
      * @param value The value to write
      * @param out The output to write to
      */
     public static void writeVarlong(long value, DataOutput out) throws IOException {
+        // xxxx .. xxx0 ^ 0000.... 0000x : 把第1位移到最后一位，
+        // zig-zag (符号位移到末尾，负数的数字位取反)
         long v = (value << 1) ^ (value >> 63);
+        // v 不等于0
         while ((v & 0xffffffffffffff80L) != 0L) {
+            // 1. value & 0111 1111（7位1）：value后7位不变，就拿到value的后7位，前面都是0, 0XXX XXXX
+            // 2. 0XXX XXXX | 1000 0000 : 1XXX XXXX ，第一位1，后7位是value后7位
             out.writeByte(((int) v & 0x7f) | 0x80);
             v >>>= 7;
         }

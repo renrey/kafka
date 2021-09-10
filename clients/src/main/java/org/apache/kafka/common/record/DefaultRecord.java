@@ -182,15 +182,34 @@ public class DefaultRecord implements Record {
                               ByteBuffer key,
                               ByteBuffer value,
                               Header[] headers) throws IOException {
+        /**
+         * ByteUtils.writeVarint、writeVarlong 都是可变字节（使用zig-zag+varint压缩），优化传输的字节数量
+         * 都是压缩表示长度的属性的字节，如keySize、valueSize
+         */
+
+        /**
+         * 计算内容的大小：
+         * attributes（1字节）
+         * offsetDelta（int）
+         * timestampDelta（long）
+         * keySize （int）+key
+         * valueSize （int）+ value
+         * headerLength + header
+         *
+         * 每个header：headerKeySize + headerKey + headerValueSize + headerValue
+         */
         int sizeInBytes = sizeOfBodyInBytes(offsetDelta, timestampDelta, key, value, headers);
         ByteUtils.writeVarint(sizeInBytes, out);
 
         byte attributes = 0; // there are no used record attributes at the moment
+        // 先写入attributes（值为0），1字节
         out.write(attributes);
 
+        // 写入timestampDelta（最大8字节long）、offsetDelta（最大4字节int）
         ByteUtils.writeVarlong(timestampDelta, out);
         ByteUtils.writeVarint(offsetDelta, out);
 
+        // 写入keySize（最大4字节）、key值
         if (key == null) {
             ByteUtils.writeVarint(-1, out);
         } else {
@@ -199,6 +218,7 @@ public class DefaultRecord implements Record {
             Utils.writeTo(out, key, keySize);
         }
 
+        // 写入valueSize（最大4字节）、value值
         if (value == null) {
             ByteUtils.writeVarint(-1, out);
         } else {
@@ -210,22 +230,29 @@ public class DefaultRecord implements Record {
         if (headers == null)
             throw new IllegalArgumentException("Headers cannot be null");
 
+        // 写入headerLength（最大4字节）
         ByteUtils.writeVarint(headers.length, out);
 
+        // 写入每个header内容：headerKeySize（最大4字节）+headerKey值（进行了utf8编码） +headerValueSize + headerValue
         for (Header header : headers) {
             String headerKey = header.key();
             if (headerKey == null)
                 throw new IllegalArgumentException("Invalid null header key found in headers");
 
+            // headerKey进行了utf8编码
             byte[] utf8Bytes = Utils.utf8(headerKey);
+            // 写入headerKey长度
             ByteUtils.writeVarint(utf8Bytes.length, out);
+            // 写入header内容
             out.write(utf8Bytes);
 
             byte[] headerValue = header.value();
             if (headerValue == null) {
                 ByteUtils.writeVarint(-1, out);
             } else {
+                // 写入headerValue长度
                 ByteUtils.writeVarint(headerValue.length, out);
+                // headerValue内容
                 out.write(headerValue);
             }
         }
@@ -576,6 +603,7 @@ public class DefaultRecord implements Record {
                                          ByteBuffer key,
                                          ByteBuffer value,
                                          Header[] headers) {
+        // key和value的实际长度
         int keySize = key == null ? -1 : key.remaining();
         int valueSize = value == null ? -1 : value.remaining();
         return sizeOfBodyInBytes(offsetDelta, timestampDelta, keySize, valueSize, headers);
@@ -586,20 +614,25 @@ public class DefaultRecord implements Record {
                                         int keySize,
                                         int valueSize,
                                         Header[] headers) {
+        // attributes：1byte
         int size = 1; // always one byte for attributes
+        // offset离第一条的offset的差距，varint优化
         size += ByteUtils.sizeOfVarint(offsetDelta);
+        // timestamp离第一条的timestamp的差距，varint优化
         size += ByteUtils.sizeOfVarlong(timestampDelta);
+        // keySize+key + valueSize + value + header
         size += sizeOf(keySize, valueSize, headers);
         return size;
     }
 
     private static int sizeOf(int keySize, int valueSize, Header[] headers) {
         int size = 0;
+        // keySize（varint优化） + key
         if (keySize < 0)
             size += NULL_VARINT_SIZE_BYTES;
         else
             size += ByteUtils.sizeOfVarint(keySize) + keySize;
-
+        // valueSize（varint优化） + value
         if (valueSize < 0)
             size += NULL_VARINT_SIZE_BYTES;
         else
@@ -608,8 +641,14 @@ public class DefaultRecord implements Record {
         if (headers == null)
             throw new IllegalArgumentException("Headers cannot be null");
 
+        // 所有headerLength（varint优化） + 所有header内容
         size += ByteUtils.sizeOfVarint(headers.length);
         for (Header header : headers) {
+            /**
+             * 每个header实际内容：
+             * headerKeySize + header
+             * headerValueSize + headerValue
+             */
             String headerKey = header.key();
             if (headerKey == null)
                 throw new IllegalArgumentException("Invalid null header key found in headers");

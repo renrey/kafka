@@ -110,9 +110,9 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         }
 
         this.magic = magic;
-        this.timestampType = timestampType;
-        this.compressionType = compressionType;
-        this.baseOffset = baseOffset;
+        this.timestampType = timestampType; // producer默认TimestampType.CREATE_TIME
+        this.compressionType = compressionType; // producer默认NONE
+        this.baseOffset = baseOffset; // producer默认0
         this.logAppendTime = logAppendTime;
         this.numRecords = 0;
         this.uncompressedRecordsSizeInBytes = 0;
@@ -130,6 +130,13 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
+        /**
+         * 消息写入的流
+         * 主要利用ByteBuffer
+         * wrapForOutput: 根据不同压缩类型，使用压缩流的DataOutputStream
+         * 如果使用压缩，写入时先写入压缩流的缓冲区，然后用压缩算法对消息压缩，再写入到ByteBufferStream
+         * DataOutputStream（压缩流stream(ByteBufferOutputStream(byteBuffer))）
+         */
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
     }
 
@@ -398,6 +405,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
     /**
      * Append a record and return its checksum for message format v0 and v1, or null for v2 and above.
+     * offset：消息record在log buffer的位置（序号，第几个）
      */
     private Long appendWithOffset(long offset, boolean isControlRecord, long timestamp, ByteBuffer key,
                                   ByteBuffer value, Header[] headers) {
@@ -412,15 +420,19 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             if (timestamp < 0 && timestamp != RecordBatch.NO_TIMESTAMP)
                 throw new IllegalArgumentException("Invalid negative timestamp " + timestamp);
 
+            // v2前是没有个消息header的
             if (magic < RecordBatch.MAGIC_VALUE_V2 && headers != null && headers.length > 0)
                 throw new IllegalArgumentException("Magic v" + magic + " does not support record headers");
 
+            // 第一次写入的时间
             if (firstTimestamp == null)
                 firstTimestamp = timestamp;
-
+            // offset就是消息开始写入的offset
+            // magic > 1,也就是v2的写入
             if (magic > RecordBatch.MAGIC_VALUE_V1) {
                 appendDefaultRecord(offset, timestamp, key, value, headers);
                 return null;
+            // v0、v1写入
             } else {
                 return appendLegacyRecord(offset, timestamp, key, value, magic);
             }
@@ -688,9 +700,15 @@ public class MemoryRecordsBuilder implements AutoCloseable {
     private void appendDefaultRecord(long offset, long timestamp, ByteBuffer key, ByteBuffer value,
                                      Header[] headers) throws IOException {
         ensureOpenForRecordAppend();
+        // 离第一个的距离？
         int offsetDelta = (int) (offset - baseOffset);
+        // 离第一个的创建时间差
         long timestampDelta = timestamp - firstTimestamp;
+        /**
+         * 往流中写入消息
+         */
         int sizeInBytes = DefaultRecord.writeTo(appendStream, offsetDelta, timestampDelta, key, value, headers);
+        // 更新lasetoffset
         recordWritten(offset, timestamp, sizeInBytes);
     }
 
@@ -698,13 +716,30 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         ensureOpenForRecordAppend();
         if (compressionType == CompressionType.NONE && timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
-
+        /**
+         * 1.计算消息的实际大小
+         * 实际消息的组成：
+         * header：crc(4字节，checksum) + magic(1字节，版本) + attributes(1字节，TimestampType) + timestamp(8字节，v1才有)
+         * key_size：4字节
+         * key值
+         * value_size:4字节
+         * value值
+         */
+        //
         int size = LegacyRecord.recordSize(magic, key, value);
+        /**
+         * 2. 先写入序号offset（8字节long），然后写消息的大小size（4字节int）
+         */
         AbstractLegacyRecordBatch.writeHeader(appendStream, toInnerOffset(offset), size);
-
+        // 默认是CREATE_TIME
+        // 如果使用LOG_APPEND_TIME，timestamp是实际插入log buffer的时间
         if (timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
+        /**
+         * 3. 写入实际消息
+         */
         long crc = LegacyRecord.write(appendStream, magic, timestamp, key, value, CompressionType.NONE, timestampType);
+        // 更新lastOffset
         recordWritten(offset, timestamp, size + Records.LOG_OVERHEAD);
         return crc;
     }
