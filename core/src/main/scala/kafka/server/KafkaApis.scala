@@ -131,6 +131,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     metadataSupport.forwardingManager.isDefined && request.context.principalSerde.isPresent
   }
 
+  // 转发到controller
   private def maybeForwardToController(
     request: RequestChannel.Request,
     handler: RequestChannel.Request => Unit
@@ -151,6 +152,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   /**
    * Top-level method that handles all requests and multiplexes to the right api
+   * 处理不同API请求
    */
   override def handle(request: RequestChannel.Request): Unit = {
     try {
@@ -164,20 +166,32 @@ class KafkaApis(val requestChannel: RequestChannel,
       }
 
       request.header.apiKey match {
-        case ApiKeys.PRODUCE => handleProduceRequest(request)
-        case ApiKeys.FETCH => handleFetchRequest(request)
+        case ApiKeys.PRODUCE => handleProduceRequest(request) // 生产消息（prodcuer）
+        case ApiKeys.FETCH => handleFetchRequest(request) // 获取消息(follower、consumer)
+        // consumer 获取最新、最早的offset（用于当前无已有的消费offset）
         case ApiKeys.LIST_OFFSETS => handleListOffsetRequest(request)
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
+        // 通知更新本地的分区Leader和ISR列表
         case ApiKeys.LEADER_AND_ISR => handleLeaderAndIsrRequest(request)
         case ApiKeys.STOP_REPLICA => handleStopReplicaRequest(request)
         case ApiKeys.UPDATE_METADATA => handleUpdateMetadataRequest(request)
         case ApiKeys.CONTROLLED_SHUTDOWN => handleControlledShutdownRequest(request)
+        // consumer提交消费的offset
         case ApiKeys.OFFSET_COMMIT => handleOffsetCommitRequest(request)
+        // follower初始化，向leader获取指定epoch的LEO，用于截取
+        // consumer：获取已有消费offset
         case ApiKeys.OFFSET_FETCH => handleOffsetFetchRequest(request)
+        /**
+         * consumer相关
+         */
+        // 初始寻找coordinator
         case ApiKeys.FIND_COORDINATOR => handleFindCoordinatorRequest(request)
+        // 加入group（收到FindCoordinator后）
         case ApiKeys.JOIN_GROUP => handleJoinGroupRequest(request)
+        // 心跳
         case ApiKeys.HEARTBEAT => handleHeartbeatRequest(request)
         case ApiKeys.LEAVE_GROUP => handleLeaveGroupRequest(request)
+        // 同步group信息（leader、follower收到join请求响应后）
         case ApiKeys.SYNC_GROUP => handleSyncGroupRequest(request)
         case ApiKeys.DESCRIBE_GROUPS => handleDescribeGroupRequest(request)
         case ApiKeys.LIST_GROUPS => handleListGroupsRequest(request)
@@ -209,6 +223,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case ApiKeys.DELETE_GROUPS => handleDeleteGroupsRequest(request)
         case ApiKeys.ELECT_LEADERS => handleElectReplicaLeader(request)
         case ApiKeys.INCREMENTAL_ALTER_CONFIGS => maybeForwardToController(request, handleIncrementalAlterConfigsRequest)
+        // 执行重分配topic的分区
         case ApiKeys.ALTER_PARTITION_REASSIGNMENTS => maybeForwardToController(request, handleAlterPartitionReassignmentsRequest)
         case ApiKeys.LIST_PARTITION_REASSIGNMENTS => handleListPartitionReassignmentsRequest(request)
         case ApiKeys.OFFSET_DELETE => handleOffsetDeleteRequest(request)
@@ -254,6 +269,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         s"${leaderAndIsrRequest.brokerEpoch} smaller than the current broker epoch ${zkSupport.controller.brokerEpoch}")
       requestHelper.sendResponseExemptThrottle(request, leaderAndIsrRequest.getErrorResponse(0, Errors.STALE_BROKER_EPOCH.exception))
     } else {
+      /**
+       * leader或follower处理，更新ISR、分配列表
+       */
       val response = replicaManager.becomeLeaderOrFollower(correlationId, leaderAndIsrRequest,
         RequestHandlerHelper.onLeadershipChange(groupCoordinator, txnCoordinator, _, _))
       requestHelper.sendResponseExemptThrottle(request, response)
@@ -394,6 +412,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val unauthorizedTopicErrors = mutable.Map[TopicPartition, Errors]()
     val nonExistingTopicErrors = mutable.Map[TopicPartition, Errors]()
     // the callback for sending an offset commit response
+    // 发送响应
     def sendResponseCallback(commitStatus: Map[TopicPartition, Errors]): Unit = {
       val combinedCommitStatus = commitStatus ++ unauthorizedTopicErrors ++ nonExistingTopicErrors
       if (isDebugEnabled)
@@ -462,6 +481,9 @@ class KafkaApis(val requestChannel: RequestChannel,
                 && partitionData.committedMetadata().length > config.offsetMetadataMaxSize)
                 (topicPartition, Errors.OFFSET_METADATA_TOO_LARGE)
               else {
+                /**
+                 * 存储到zk
+                 */
                 zkSupport.zkClient.setOrCreateConsumerOffset(
                   offsetCommitRequest.data.groupId,
                   topicPartition,
@@ -510,6 +532,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
 
         // call coordinator to handle commit offset
+        // 执行
         groupCoordinator.handleCommitOffsets(
           offsetCommitRequest.data.groupId,
           offsetCommitRequest.data.memberId,
@@ -545,6 +568,10 @@ class KafkaApis(val requestChannel: RequestChannel,
     val authorizedTopics = authHelper.filterByAuthorized(request.context, WRITE, TOPIC,
       produceRequest.data().topicData().asScala)(_.name())
 
+    /**
+     * 解析data
+     * 默认partitionData其实只有一个
+     */
     produceRequest.data.topicData.forEach(topic => topic.partitionData.forEach { partition =>
       val topicPartition = new TopicPartition(topic.name, partition.index)
       // This caller assumes the type is MemoryRecords and that is true on current serialization
@@ -558,6 +585,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       else
         try {
           ProduceRequest.validateRecords(request.header.apiVersion, memoryRecords)
+          // 分区映射Record
           authorizedRequestInfo += (topicPartition -> memoryRecords)
         } catch {
           case e: ApiException =>
@@ -640,6 +668,9 @@ class KafkaApis(val requestChannel: RequestChannel,
       val internalTopicsAllowed = request.header.clientId == AdminUtils.AdminClientId
 
       // call the replica manager to append messages to the replicas
+      /**
+       * replicaManager写入消息
+       */
       replicaManager.appendRecords(
         timeout = produceRequest.timeout.toLong,
         requiredAcks = produceRequest.acks,
@@ -687,8 +718,13 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     val erroneous = mutable.ArrayBuffer[(TopicPartition, FetchResponse.PartitionData[Records])]()
     val interesting = mutable.ArrayBuffer[(TopicPartition, FetchRequest.PartitionData)]()
+
+    /**
+     * follower
+     */
     if (fetchRequest.isFromFollower) {
       // The follower must have ClusterAction on ClusterResource in order to fetch partition data.
+      // 校验本地是有对应的分区
       if (authHelper.authorize(request.context, CLUSTER_ACTION, CLUSTER, CLUSTER_NAME)) {
         fetchContext.foreachPartition { (topicPartition, data) =>
           if (!metadataCache.contains(topicPartition))
@@ -702,6 +738,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
     } else {
+      /**
+       * consumer读取
+       */
       // Regular Kafka consumers need READ permission on each partition they are fetching.
       val partitionDatas = new mutable.ArrayBuffer[(TopicPartition, FetchRequest.PartitionData)]
       fetchContext.foreachPartition { (topicPartition, partitionData) =>
@@ -773,6 +812,7 @@ class KafkaApis(val requestChannel: RequestChannel,
                 new FetchResponse.PartitionData[BaseRecords](error, partitionData.highWatermark,
                   partitionData.lastStableOffset, partitionData.logStartOffset,
                   partitionData.preferredReadReplica, partitionData.abortedTransactions,
+                  // 转换
                   new LazyDownConversionRecords(tp, unconvertedRecords, magic, fetchContext.getFetchOffset(tp).get, time))
               } catch {
                 case e: UnsupportedCompressionTypeException =>
@@ -795,9 +835,18 @@ class KafkaApis(val requestChannel: RequestChannel,
     }
 
     // the callback for process a fetch response, invoked before throttling
+
+    /**
+     * 响应返回
+     * @param responsePartitionData
+     */
     def processResponseCallback(responsePartitionData: Seq[(TopicPartition, FetchPartitionData)]): Unit = {
+      /**
+       * 读取到的Record的对象为FileRecords
+       */
       val partitions = new util.LinkedHashMap[TopicPartition, FetchResponse.PartitionData[Records]]
       val reassigningPartitions = mutable.Set[TopicPartition]()
+      // 按分区放入partitions-map
       responsePartitionData.foreach { case (tp, data) =>
         val abortedTransactions = data.abortedTransactions.map(_.asJava).orNull
         val lastStableOffset = data.lastStableOffset.getOrElse(FetchResponse.INVALID_LAST_STABLE_OFFSET)
@@ -818,6 +867,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       var unconvertedFetchResponse: FetchResponse[Records] = null
 
+      // 构建响应对象
       def createResponse(throttleTimeMs: Int): FetchResponse[BaseRecords] = {
         // Down-convert messages for each partition if required
         val convertedData = new util.LinkedHashMap[TopicPartition, FetchResponse.PartitionData[BaseRecords]]
@@ -825,10 +875,12 @@ class KafkaApis(val requestChannel: RequestChannel,
           if (unconvertedPartitionData.error != Errors.NONE)
             debug(s"Fetch request with correlation id ${request.header.correlationId} from client $clientId " +
               s"on partition $tp failed due to ${unconvertedPartitionData.error.exceptionName}")
+          // 把PartitionData的record封装为LazyDownConversionRecords
           convertedData.put(tp, maybeConvertFetchedData(tp, unconvertedPartitionData))
         }
 
         // Prepare fetch response from converted data
+        // FetchResponse对象
         val response = new FetchResponse(unconvertedFetchResponse.error, convertedData, throttleTimeMs,
           unconvertedFetchResponse.sessionId)
         // record the bytes out metrics only when the response is being sent
@@ -848,6 +900,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
       }
 
+      // follower响应
       if (fetchRequest.isFromFollower) {
         // We've already evaluated against the quota and are good to go. Just need to record it now.
         unconvertedFetchResponse = fetchContext.updateAndGenerateResponseData(partitions)
@@ -855,6 +908,10 @@ class KafkaApis(val requestChannel: RequestChannel,
         quotas.leader.record(responseSize)
         trace(s"Sending Fetch response with partitions.size=${unconvertedFetchResponse.responseData.size}, " +
           s"metadata=${unconvertedFetchResponse.sessionId}")
+        /**
+         * follower:
+         * 发送响应对象, 就是提交到原来的processor响应队列中
+         */
         requestHelper.sendResponseExemptThrottle(request, createResponse(0), Some(updateConversionStats))
       } else {
         // Fetch size used to determine throttle time is calculated before any down conversions.
@@ -901,18 +958,25 @@ class KafkaApis(val requestChannel: RequestChannel,
     else
       quotas.fetch.getMaxValueInQuotaWindow(request.session, clientId).toInt
 
+    /**
+     * 获取大小上限、下限
+     */
     val fetchMaxBytes = Math.min(Math.min(fetchRequest.maxBytes, config.fetchMaxBytes), maxQuotaWindowBytes)
     val fetchMinBytes = Math.min(fetchRequest.minBytes, fetchMaxBytes)
+    // 没有存在的，直接返回空
     if (interesting.isEmpty)
       processResponseCallback(Seq.empty)
     else {
       // call the replica manager to fetch messages from the local replica
+      /**
+       * 执行fetch消息
+       */
       replicaManager.fetchMessages(
         fetchRequest.maxWait.toLong,
         fetchRequest.replicaId,
         fetchMinBytes,
         fetchMaxBytes,
-        versionId <= 2,
+        versionId <= 2, // 肯定true
         interesting,
         replicationQuota(fetchRequest),
         processResponseCallback,
@@ -927,10 +991,13 @@ class KafkaApis(val requestChannel: RequestChannel,
   def handleListOffsetRequest(request: RequestChannel.Request): Unit = {
     val version = request.header.apiVersion
 
+    /**
+     * 处理
+     */
     val topics = if (version == 0)
       handleListOffsetRequestV0(request)
     else
-      handleListOffsetRequestV1AndAbove(request)
+      handleListOffsetRequestV1AndAbove(request) // 新的
 
     requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs => new ListOffsetsResponse(new ListOffsetsResponseData()
       .setThrottleTimeMs(requestThrottleMs)
@@ -1017,21 +1084,28 @@ class KafkaApis(val requestChannel: RequestChannel,
     )
 
     val responseTopics = authorizedRequestInfo.map { topic =>
+      // 遍历分区
       val responsePartitions = topic.partitions.asScala.map { partition =>
         val topicPartition = new TopicPartition(topic.name, partition.partitionIndex)
+        // 请求中有重复分区
         if (offsetRequest.duplicatePartitions.contains(topicPartition)) {
           debug(s"OffsetRequest with correlation id $correlationId from client $clientId on partition $topicPartition " +
               s"failed because the partition is duplicated in the request.")
           buildErrorResponse(Errors.INVALID_REQUEST, partition)
         } else {
+          // 正常
           try {
             val fetchOnlyFromLeader = offsetRequest.replicaId != ListOffsetsRequest.DEBUGGING_REPLICA_ID
             val isClientRequest = offsetRequest.replicaId == ListOffsetsRequest.CONSUMER_REPLICA_ID
+            // 默认read uncommit
             val isolationLevelOpt = if (isClientRequest)
               Some(offsetRequest.isolationLevel)
             else
               None
 
+            /**
+             * 获取
+             */
             val foundOpt = replicaManager.fetchOffsetForTimestamp(topicPartition,
               partition.timestamp,
               isolationLevelOpt,
@@ -1113,6 +1187,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       val nonExistingTopics = topics.diff(topicResponses.map(_.name).toSet)
       val nonExistingTopicResponses = if (allowAutoTopicCreation) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
+        // 自动创建topic
         autoTopicCreationManager.createTopics(nonExistingTopics, controllerMutationQuota)
       } else {
         nonExistingTopics.map { topic =>
@@ -1194,6 +1269,10 @@ class KafkaApis(val requestChannel: RequestChannel,
     val errorUnavailableListeners = requestVersion >= 6
 
     val allowAutoCreation = config.autoCreateTopicsEnable && metadataRequest.allowAutoTopicCreation && !metadataRequest.isAllTopics
+    /**
+     * 获取topic元数据
+     * 这里对自动创建topic进行创建（如__consumer_offsets）
+     */
     val topicMetadata = getTopicMetadata(request, metadataRequest.isAllTopics, allowAutoCreation, authorizedTopics,
       request.context.listenerName, errorUnavailableEndpoints, errorUnavailableListeners)
 
@@ -1255,6 +1334,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         if (!authHelper.authorize(request.context, DESCRIBE, GROUP, offsetFetchRequest.groupId))
           offsetFetchRequest.getErrorResponse(requestThrottleMs, Errors.GROUP_AUTHORIZATION_FAILED)
         else {
+          // api-0处理
           if (header.apiVersion == 0) {
             val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.unsupported("Version 0 offset fetch requests"))
             val (authorizedPartitions, unauthorizedPartitions) = partitionByAuthorized(
@@ -1263,9 +1343,15 @@ class KafkaApis(val requestChannel: RequestChannel,
             // version 0 reads offsets from ZK
             val authorizedPartitionData = authorizedPartitions.map { topicPartition =>
               try {
+                // 本地缓存没有这个分区，之际返回UNKNOWN
                 if (!metadataCache.contains(topicPartition))
                   (topicPartition, OffsetFetchResponse.UNKNOWN_PARTITION)
                 else {
+                  /**
+                   * api-0处理
+                   * 从zk获取group对分区的消费offset：
+                   * /consumers/${group}/offsets/${topic}/${partition}
+                   */
                   val payloadOpt = zkSupport.zkClient.getConsumerOffset(offsetFetchRequest.groupId, topicPartition)
                   payloadOpt match {
                     case Some(payload) =>
@@ -1299,6 +1385,10 @@ class KafkaApis(val requestChannel: RequestChannel,
             } else {
               val (authorizedPartitions, unauthorizedPartitions) = partitionByAuthorized(
                 offsetFetchRequest.partitions.asScala)
+              /**
+               * api1后，获取部分分区：
+               * 处理获取fetch
+               */
               val (error, authorizedPartitionData) = groupCoordinator.handleFetchOffsets(offsetFetchRequest.groupId,
                 offsetFetchRequest.requireStable, Some(authorizedPartitions))
               if (error != Errors.NONE)
@@ -1315,6 +1405,9 @@ class KafkaApis(val requestChannel: RequestChannel,
       offsetFetchResponse
     }
 
+    /**
+     * createResponse
+     */
     requestHelper.sendResponseMaybeThrottle(request, createResponse)
   }
 
@@ -1328,14 +1421,23 @@ class KafkaApis(val requestChannel: RequestChannel,
         !authHelper.authorize(request.context, DESCRIBE, TRANSACTIONAL_ID, findCoordinatorRequest.data.key))
       requestHelper.sendErrorResponseMaybeThrottle(request, Errors.TRANSACTIONAL_ID_AUTHORIZATION_FAILED.exception)
     else {
+      /**
+       * partition: 作为存储这个group数据的分区
+       * 分区下标，groupId的Hash % 分区数（50个）
+       *
+       * internalTopicName:
+       * 获取本次需要的内部topic名，consumer-group：__consumer_offsets
+       */
       val (partition, internalTopicName) = CoordinatorType.forId(findCoordinatorRequest.data.keyType) match {
         case CoordinatorType.GROUP =>
+          // partition下标：groupId的Hash % 分区数（50个）
           (groupCoordinator.partitionFor(findCoordinatorRequest.data.key), GROUP_METADATA_TOPIC_NAME)
 
         case CoordinatorType.TRANSACTION =>
           (txnCoordinator.partitionFor(findCoordinatorRequest.data.key), TRANSACTION_STATE_TOPIC_NAME)
       }
 
+      // 获取对应的topic信息
       val topicMetadata = metadataCache.getTopicMetadata(Set(internalTopicName), request.context.listenerName)
       def createFindCoordinatorResponse(error: Errors,
                                         node: Node,
@@ -1352,6 +1454,10 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       if (topicMetadata.headOption.isEmpty) {
         val controllerMutationQuota = quotas.controllerMutation.newPermissiveQuotaFor(request)
+        /**
+         * 没有则进行创建topic，如__consumer_offsets
+         * -- 第一次内置topic没有，就是在这里创建，返回没找到
+         */
         autoTopicCreationManager.createTopics(Seq(internalTopicName).toSet, controllerMutationQuota)
         requestHelper.sendResponseMaybeThrottle(request, requestThrottleMs => createFindCoordinatorResponse(
           Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode, requestThrottleMs))
@@ -1360,14 +1466,20 @@ class KafkaApis(val requestChannel: RequestChannel,
           val responseBody = if (topicMetadata.head.errorCode != Errors.NONE.code) {
             createFindCoordinatorResponse(Errors.COORDINATOR_NOT_AVAILABLE, Node.noNode, requestThrottleMs)
           } else {
-            val coordinatorEndpoint = topicMetadata.head.partitions.asScala
-              .find(_.partitionIndex == partition)
-              .filter(_.leaderId != MetadataResponse.NO_LEADER_ID)
-              .flatMap(metadata => metadataCache.getAliveBroker(metadata.leaderId))
-              .flatMap(_.endpoints.get(request.context.listenerName.value()))
+            /**
+             * 获取存储分区的当前leader的连接地址coordinatorEndpoint
+             * 1. 找到partition下标的分区，且必须有leader的
+             * 2. 拿到这个leader的连接地址（listener）作为endpoint
+             */
+            val coordinatorEndpoint = topicMetadata.head.partitions.asScala // 第1个,其实就只有1个
+              .find(_.partitionIndex == partition) // 找到partition下标的分区
+              .filter(_.leaderId != MetadataResponse.NO_LEADER_ID)  // 必须有leader
+              .flatMap(metadata => metadataCache.getAliveBroker(metadata.leaderId)) // 获取leader-broker的元数据
+              .flatMap(_.endpoints.get(request.context.listenerName.value())) // listener就是broker在配置上的listeners配置，就是broker连接地址
               .filterNot(_.isEmpty)
 
             coordinatorEndpoint match {
+              // 返回coordinatorEndpoint连接地址
               case Some(endpoint) =>
                 createFindCoordinatorResponse(Errors.NONE, endpoint, requestThrottleMs)
               case _ =>
@@ -1378,6 +1490,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             .format(responseBody, request.header.correlationId, request.header.clientId))
           responseBody
         }
+        // 发送响应
         requestHelper.sendResponseMaybeThrottle(request, createResponse)
       }
     }
@@ -1513,6 +1626,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       val protocols = joinGroupRequest.data.protocols.valuesList.asScala.map(protocol =>
         (protocol.name, protocol.metadata)).toList
 
+      // 处理
       groupCoordinator.handleJoinGroup(
         joinGroupRequest.data.groupId,
         joinGroupRequest.data.memberId,
@@ -1559,6 +1673,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         assignmentMap += (assignment.memberId -> assignment.assignment)
       }
 
+      // 处理
       groupCoordinator.handleSyncGroup(
         syncGroupRequest.data.groupId,
         syncGroupRequest.data.generationId,
@@ -2503,6 +2618,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
   def handleOffsetForLeaderEpochRequest(request: RequestChannel.Request): Unit = {
     val offsetForLeaderEpoch = request.body[OffsetsForLeaderEpochRequest]
+    // 需要的topic（分区）
     val topics = offsetForLeaderEpoch.data.topics.asScala.toSeq
 
     // The OffsetsForLeaderEpoch API was initially only used for inter-broker communication and required
@@ -2513,6 +2629,9 @@ class KafkaApis(val requestChannel: RequestChannel,
         (topics, Seq.empty[OffsetForLeaderTopic])
       else authHelper.partitionSeqByAuthorized(request.context, DESCRIBE, TOPIC, topics)(_.topic)
 
+    /**
+     * 获取分区的LEO
+     */
     val endOffsetsForAuthorizedPartitions = replicaManager.lastOffsetForLeaderEpoch(authorizedTopics)
     val endOffsetsForUnauthorizedPartitions = unauthorizedTopics.map { offsetForLeaderTopic =>
       val partitions = offsetForLeaderTopic.partitions.asScala.map { offsetForLeaderPartition =>

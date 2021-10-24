@@ -165,6 +165,7 @@ public class FileLogInputStream implements LogInputStream<FileLogInputStream.Fil
 
         @Override
         public void ensureValid() {
+            // 加载整个batch，然后检验合法
             loadFullBatch().ensureValid();
         }
 

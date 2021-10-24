@@ -101,10 +101,14 @@ private[log] object LogValidator extends Logging {
       if (!records.hasMatchingMagic(magic))
         convertAndAssignOffsetsNonCompressed(records, topicPartition, offsetCounter, compactedTopic, time, now, timestampType,
           timestampDiffMaxMs, magic, partitionLeaderEpoch, origin, brokerTopicStats)
-      else
+      else {
+        /**
+         * 分配offset，重要！！！
+         */
         // Do in-place validation, offset assignment and maybe set timestamp
         assignOffsetsNonCompressed(records, topicPartition, offsetCounter, now, compactedTopic, timestampType, timestampDiffMaxMs,
           partitionLeaderEpoch, origin, magic, brokerTopicStats)
+      }
     } else {
       validateMessagesAndAssignOffsetsCompressed(records, topicPartition, offsetCounter, time, now, sourceCodec, targetCodec, compactedTopic,
         magic, timestampType, timestampDiffMaxMs, partitionLeaderEpoch, origin, interBrokerProtocolVersion, brokerTopicStats)
@@ -296,6 +300,7 @@ private[log] object LogValidator extends Logging {
         validateRecord(batch, topicPartition, record, batchIndex, now, timestampType,
           timestampDiffMaxMs, compactedTopic, brokerTopicStats).foreach(recordError => recordErrors += recordError)
 
+        // LEO+1
         val offset = offsetCounter.getAndIncrement()
         if (batch.magic > RecordBatch.MAGIC_VALUE_V0 && record.timestamp > maxBatchTimestamp) {
           maxBatchTimestamp = record.timestamp
@@ -311,8 +316,15 @@ private[log] object LogValidator extends Logging {
         offsetOfMaxTimestamp = offsetOfMaxBatchTimestamp
       }
 
+      /**
+       * 更新最后offset ：当前LEO - 1 (上面有自增)
+       * 实际是更新batch的baseOffset为开始消息的准确offset
+       */
       batch.setLastOffset(offsetCounter.value - 1)
 
+      /**
+       * 更新成当前的leaderEpoch
+       */
       if (batch.magic >= RecordBatch.MAGIC_VALUE_V2)
         batch.setPartitionLeaderEpoch(partitionLeaderEpoch)
 

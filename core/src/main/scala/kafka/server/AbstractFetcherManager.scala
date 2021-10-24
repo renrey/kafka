@@ -101,6 +101,10 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
   // Visibility for testing
   private[server] def getFetcherId(topicPartition: TopicPartition): Int = {
     lock synchronized {
+      /**
+       * 分区的fetcher寻址：
+       * (31 * topic的hash + 分区下标) % fetcher数量
+       */
       Utils.abs(31 * topicPartition.topic.hashCode() + topicPartition.partition) % numFetchersPerBroker
     }
   }
@@ -121,7 +125,10 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
 
   def addFetcherForPartitions(partitionAndOffsets: Map[TopicPartition, InitialFetchState]): Unit = {
     lock synchronized {
+      // 生成每个分区对应的fetcher线程id
+      // key - BrokerAndFetcherId, value为同一个key的InitialFetchState列表
       val partitionsPerFetcher = partitionAndOffsets.groupBy { case (topicPartition, brokerAndInitialFetchOffset) =>
+        // 作为key
         BrokerAndFetcherId(brokerAndInitialFetchOffset.leader, getFetcherId(topicPartition))
       }
 
@@ -135,6 +142,9 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
 
       for ((brokerAndFetcherId, initialFetchOffsets) <- partitionsPerFetcher) {
         val brokerIdAndFetcherId = BrokerIdAndFetcherId(brokerAndFetcherId.broker.id, brokerAndFetcherId.fetcherId)
+        /**
+         * 获取分区所属的fetcher线程，没有就新建
+         */
         val fetcherThread = fetcherThreadMap.get(brokerIdAndFetcherId) match {
           case Some(currentFetcherThread) if currentFetcherThread.sourceBroker == brokerAndFetcherId.broker =>
             // reuse the fetcher thread
@@ -146,6 +156,9 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
             addAndStartFetcherThread(brokerAndFetcherId, brokerIdAndFetcherId)
         }
 
+        /**
+         * 往fetcher添加多个分区的InitialFetchState
+         */
         addPartitionsToFetcherThread(fetcherThread, initialFetchOffsets)
       }
     }
@@ -160,6 +173,7 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
   def removeFetcherForPartitions(partitions: Set[TopicPartition]): Map[TopicPartition, PartitionFetchState] = {
     val fetchStates = mutable.Map.empty[TopicPartition, PartitionFetchState]
     lock synchronized {
+      // ReplicaFetcherThread移除分区
       for (fetcher <- fetcherThreadMap.values)
         fetchStates ++= fetcher.removePartitions(partitions)
       failedPartitions.removeAll(partitions)
@@ -229,6 +243,8 @@ class FailedPartitions {
 
 case class BrokerAndFetcherId(broker: BrokerEndPoint, fetcherId: Int)
 
+// BrokerEndPoint: leader的brokerId
+// currentLeaderEpoch: follower当前的epoch（controller响应的）
 case class InitialFetchState(leader: BrokerEndPoint, currentLeaderEpoch: Int, initOffset: Long)
 
 case class BrokerIdAndFetcherId(brokerId: Int, fetcherId: Int)

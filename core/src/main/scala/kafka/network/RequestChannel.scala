@@ -128,6 +128,7 @@ object RequestChannel extends Logging {
           val responseBytes = context.buildResponseEnvelopePayload(abstractResponse)
           val envelopeResponse = new EnvelopeResponse(responseBytes, Errors.NONE)
           request.context.buildResponseSend(envelopeResponse)
+       // 一般都没有这个，所以走这里
         case None =>
           context.buildResponseSend(abstractResponse)
       }
@@ -404,6 +405,9 @@ class RequestChannel(val queueSize: Int,
       case _: StartThrottlingResponse | _: EndThrottlingResponse => ()
     }
 
+    /**
+     * 提交到接收请求时的Processor的responseQueue中
+     */
     val processor = processors.get(response.processor)
     // The processor may be null if it was shutdown. In this case, the connections
     // are closed, so the response is dropped.

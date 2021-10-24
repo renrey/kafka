@@ -515,6 +515,9 @@ public class NetworkClient implements KafkaClient {
             }
             // The call to build may also throw UnsupportedVersionException, if there are essential
             // fields that cannot be represented in the chosen version.
+            /**
+             * 提交
+             */
             doSend(clientRequest, isInternalRequest, now, builder.build(version));
         } catch (UnsupportedVersionException unsupportedVersionException) {
             // If the version is not supported, skip sending the request over the wire.
@@ -708,8 +711,10 @@ public class NetworkClient implements KafkaClient {
         Node foundCanConnect = null;
         Node foundReady = null;
 
+        // 随机
         int offset = this.randOffset.nextInt(nodes.size());
         for (int i = 0; i < nodes.size(); i++) {
+            // 轮询查找
             int idx = (offset + i) % nodes.size();
             Node node = nodes.get(idx);
             if (canSendRequest(node.idString(), now)) {

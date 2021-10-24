@@ -110,12 +110,22 @@ class KafkaRequestHandlerPool(val brokerId: Int,
   private val aggregateIdleMeter = newMeter(requestHandlerAvgIdleMetricName, "percent", TimeUnit.NANOSECONDS)
 
   this.logIdent = "[" + logAndThreadNamePrefix + " Kafka Request Handler on Broker " + brokerId + "], "
+  // handler线程数组
   val runnables = new mutable.ArrayBuffer[KafkaRequestHandler](numThreads)
+
+  /**
+   * io线程数，num.io.threads配置，默认8个
+   */
   for (i <- 0 until numThreads) {
+    // 创建io线程，也叫handler线程
     createHandler(i)
   }
 
   def createHandler(id: Int): Unit = synchronized {
+    /**
+     * 启动handler线程，
+     * 任务逻辑在KafkaRequestHandler中
+     */
     runnables += new KafkaRequestHandler(id, brokerId, aggregateIdleMeter, threadPoolSize, requestChannel, apis, time)
     KafkaThread.daemon(logAndThreadNamePrefix + "-kafka-request-handler-" + id, runnables(id)).start()
   }

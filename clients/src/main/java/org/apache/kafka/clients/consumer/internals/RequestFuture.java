@@ -123,9 +123,10 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
         try {
             if (value instanceof RuntimeException)
                 throw new IllegalArgumentException("The argument to complete can not be an instance of RuntimeException");
-
+            // 更新请求结果，等于isDone=true
             if (!result.compareAndSet(INCOMPLETE_SENTINEL, value))
                 throw new IllegalStateException("Invalid attempt to complete a request future which is already complete");
+            // 触发listener的onSuccess
             fireSuccess();
         } finally {
             completedLatch.countDown();
@@ -194,12 +195,15 @@ public class RequestFuture<T> implements ConsumerNetworkClient.PollCondition {
 
     /**
      * Convert from a request future of one type to another type
+     * 新增一个listener和这个请求的future对象，且这个listener会以future作为参数
+     * 然后返回这个future，用来判断这个请求是否已完成
      * @param adapter The adapter which does the conversion
      * @param <S> The type of the future adapted to
      * @return The new future
      */
     public <S> RequestFuture<S> compose(final RequestFutureAdapter<T, S> adapter) {
         final RequestFuture<S> adapted = new RequestFuture<>();
+        // 加入监听器
         addListener(new RequestFutureListener<T>() {
             @Override
             public void onSuccess(T value) {

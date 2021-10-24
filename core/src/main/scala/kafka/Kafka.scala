@@ -105,7 +105,8 @@ object Kafka extends Logging {
             Exit.halt(1)
         }
       })
-
+      // zk: KafkaServer
+      // 不用zk: kafka.server.KafkaRaftServer.KafkaRaftServer
       try server.startup()
       catch {
         case _: Throwable =>

@@ -703,6 +703,7 @@ public class KafkaAdminClient extends AdminClient {
     private class ControllerNodeProvider implements NodeProvider {
         @Override
         public Node provide() {
+            // 使用controller节点
             if (metadataManager.isReady() &&
                     (metadataManager.controller() != null)) {
                 return metadataManager.controller();
@@ -1043,6 +1044,7 @@ public class KafkaAdminClient extends AdminClient {
          */
         private boolean maybeDrainPendingCall(Call call, long now) {
             try {
+                // 实际请求当前controller节点
                 Node node = call.nodeProvider.provide();
                 if (node != null) {
                     log.trace("Assigned {} to node {}", call, node);
@@ -3591,6 +3593,11 @@ public class KafkaAdminClient extends AdminClient {
         }
 
         final long now = time.milliseconds();
+        /**
+         * 构造请求发送、响应处理
+         * 请求：AlterPartitionReassignmentsRequest(ALTER_PARTITION_REASSIGNMENTS)
+         *
+         */
         Call call = new Call("alterPartitionReassignments", calcDeadlineMs(now, options.timeoutMs()),
                 new ControllerNodeProvider()) {
 
@@ -3624,6 +3631,7 @@ public class KafkaAdminClient extends AdminClient {
                 return new AlterPartitionReassignmentsRequest.Builder(data);
             }
 
+            // 响应回调处理
             @Override
             public void handleResponse(AbstractResponse abstractResponse) {
                 AlterPartitionReassignmentsResponse response = (AlterPartitionReassignmentsResponse) abstractResponse;
@@ -3700,6 +3708,9 @@ public class KafkaAdminClient extends AdminClient {
                 }
             }
         };
+        /**
+         * 发送这个请求给controller节点
+         */
         if (!topicsToReassignments.isEmpty()) {
             runnable.call(call, now);
         }

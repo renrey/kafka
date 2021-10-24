@@ -85,6 +85,7 @@ public class SubscriptionState {
     private Pattern subscribedPattern;
 
     /* the list of topics the user has requested */
+    // 订阅的topic
     private Set<String> subscription;
 
     /* The list of topics the group has subscribed to. This may include some topics which are not part
@@ -99,6 +100,9 @@ public class SubscriptionState {
     private final OffsetResetStrategy defaultResetStrategy;
 
     /* User-provided listener to be invoked when assignment changes */
+    /**
+     * 默认是NoOpConsumerRebalanceListener
+     */
     private ConsumerRebalanceListener rebalanceListener;
 
     private int assignmentId = 0;
@@ -163,6 +167,9 @@ public class SubscriptionState {
     }
 
     public synchronized boolean subscribe(Set<String> topics, ConsumerRebalanceListener listener) {
+        /**
+         * 注册RebalanceListener！！！用于接收到partition分配后调用的
+         */
         registerRebalanceListener(listener);
         setSubscriptionType(SubscriptionType.AUTO_TOPICS);
         return changeSubscription(topics);
@@ -254,6 +261,7 @@ public class SubscriptionState {
                     return false;
                 }
             } else {
+                // 判断分配的分区有没有自己订阅的topic
                 if (!this.subscription.contains(topicPartition.topic())) {
                     log.info("Assigned partition {} for non-subscribed topic; subscription is {}", topicPartition, this.subscription);
 
@@ -273,6 +281,7 @@ public class SubscriptionState {
         if (!this.hasAutoAssignedPartitions())
             throw new IllegalArgumentException("Attempt to dynamically assign partitions while manual assignment in use");
 
+        // 遍历分配，把每个分区的TopicPartitionState放入assignedPartitionStates-map
         Map<TopicPartition, TopicPartitionState> assignedPartitionStates = new HashMap<>(assignments.size());
         for (TopicPartition tp : assignments) {
             TopicPartitionState state = this.assignment.stateValue(tp);
@@ -282,6 +291,7 @@ public class SubscriptionState {
         }
 
         assignmentId++;
+        // 更新assignment为刚刚为新的分配所初始化的map
         this.assignment.set(assignedPartitionStates);
     }
 
@@ -423,11 +433,16 @@ public class SubscriptionState {
     }
 
     // Visible for testing
+    // 获取可以fetch的分区
     public synchronized List<TopicPartition> fetchablePartitions(Predicate<TopicPartition> isAvailable) {
         // Since this is in the hot-path for fetching, we do this instead of using java.util.stream API
         List<TopicPartition> result = new ArrayList<>();
         assignment.forEach((topicPartition, topicPartitionState) -> {
             // Cheap check is first to avoid evaluating the predicate if possible
+            /**
+             * 1. 没有pause暂停
+             * 2. position状态=Fetching
+             */
             if (topicPartitionState.isFetchable() && isAvailable.test(topicPartition)) {
                 result.add(topicPartition);
             }
@@ -498,6 +513,7 @@ public class SubscriptionState {
                              tp, currentPosition);
                     return Optional.of(new LogTruncation(tp, requestPosition, Optional.empty()));
                 }
+            // 返回的LEO < 当前初始fetch的offset，肯定不合理
             } else if (epochEndOffset.endOffset() < currentPosition.offset) {
                 if (hasDefaultOffsetResetPolicy()) {
                     SubscriptionState.FetchPosition newPosition = new SubscriptionState.FetchPosition(
@@ -514,6 +530,7 @@ public class SubscriptionState {
                     return Optional.of(new LogTruncation(tp, requestPosition, Optional.of(divergentOffset)));
                 }
             } else {
+                // 完成校验，变成FETCHING
                 state.completeValidation();
             }
         }
@@ -672,14 +689,17 @@ public class SubscriptionState {
     public synchronized void resetInitializingPositions() {
         final Set<TopicPartition> partitionsWithNoOffsets = new HashSet<>();
         assignment.forEach((tp, partitionState) -> {
+            // 还是INITIALIZING，就是未获取到commit offset
             if (partitionState.fetchState.equals(FetchStates.INITIALIZING)) {
                 if (defaultResetStrategy == OffsetResetStrategy.NONE)
                     partitionsWithNoOffsets.add(tp);
                 else
-                    requestOffsetReset(tp);
+                    requestOffsetReset(tp); // 状态->AWAIT_RESET
             }
         });
-
+        /**
+         * 如果有没committed offset的分区，且没配置OffsetResetStrategy，直接异常
+         */
         if (!partitionsWithNoOffsets.isEmpty())
             throw new NoOffsetForPartitionException(partitionsWithNoOffsets);
     }
@@ -764,7 +784,9 @@ public class SubscriptionState {
         }
 
         private void transitionState(FetchState newState, Runnable runIfTransitioned) {
+            // 判断nextState是否当前状态的validTransitions的
             FetchState nextState = this.fetchState.transitionTo(newState);
+            // 是才更新为nextState, 且执行函数
             if (nextState.equals(newState)) {
                 this.fetchState = nextState;
                 runIfTransitioned.run();
@@ -847,6 +869,10 @@ public class SubscriptionState {
         }
 
         private void validatePosition(FetchPosition position) {
+            /**
+             * 有获取到committed offset 信息跟本地有leader信息时，需要进行校验
+             * ->AWAIT_VALIDATION
+             */
             if (position.offsetEpoch.isPresent() && position.currentLeader.epoch.isPresent()) {
                 transitionState(FetchStates.AWAIT_VALIDATION, () -> {
                     this.position = position;
@@ -903,6 +929,7 @@ public class SubscriptionState {
         }
 
         private void seekValidated(FetchPosition position) {
+            // 看FETCHING是否当前状态的有效转换（validTransition），是就更新成FETCHING
             transitionState(FetchStates.FETCHING, () -> {
                 this.position = position;
                 this.resetStrategy = null;
@@ -911,7 +938,12 @@ public class SubscriptionState {
         }
 
         private void seekUnvalidated(FetchPosition fetchPosition) {
+            // ->FETCHING, 更新position
             seekValidated(fetchPosition);
+            /**
+             * 有获取到committed offset 信息跟本地有leader信息时，需要进行校验
+             * ->AWAIT_VALIDATION,如果不是两个都有，就直接跳过校验
+             */
             validatePosition(fetchPosition);
         }
 

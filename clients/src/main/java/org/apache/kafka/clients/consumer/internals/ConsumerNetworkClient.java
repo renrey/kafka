@@ -58,6 +58,9 @@ public class ConsumerNetworkClient implements Closeable {
     // flag and the request completion queue below).
     private final Logger log;
     private final KafkaClient client;
+    /**
+     * 待发送的请求
+     */
     private final UnsentRequests unsent = new UnsentRequests();
     private final Metadata metadata;
     private final Time time;
@@ -128,9 +131,11 @@ public class ConsumerNetworkClient implements Closeable {
         RequestFutureCompletionHandler completionHandler = new RequestFutureCompletionHandler();
         ClientRequest clientRequest = client.newClientRequest(node.idString(), requestBuilder, now, true,
             requestTimeoutMs, completionHandler);
+        // 放入unsent
         unsent.put(node, clientRequest);
 
         // wakeup the client in case it is blocking in poll so that we can send the queued request
+        // 唤醒selector
         client.wakeup();
         return completionHandler.future;
     }
@@ -212,6 +217,10 @@ public class ConsumerNetworkClient implements Closeable {
      */
     public boolean poll(RequestFuture<?> future, Timer timer) {
         do {
+            /**
+             * 一直poll, 执行网络事件处理（初始需要先建立连接，然后请求拉取元数据，之后发送需要的请求）
+             * 直到这个future对应的请求发送且收到响应
+             */
             poll(timer, future);
         } while (!future.isDone() && timer.notExpired());
         return future.isDone();
@@ -264,6 +273,9 @@ public class ConsumerNetworkClient implements Closeable {
                     pollTimeout = Math.min(pollTimeout, retryBackoffMs);
                 client.poll(pollTimeout, timer.currentTimeMs());
             } else {
+                /**
+                 * NetworkClient拉取、处理网络事件
+                 */
                 client.poll(0, timer.currentTimeMs());
             }
             timer.update();
@@ -282,6 +294,9 @@ public class ConsumerNetworkClient implements Closeable {
 
             // try again to send requests since buffer space may have been
             // cleared or a connect finished in the poll
+            /**
+             * 提交unsent的请求，下一次poll就能执行
+             */
             trySend(timer.currentTimeMs());
 
             // fail requests that couldn't be sent if they have expired
@@ -294,6 +309,9 @@ public class ConsumerNetworkClient implements Closeable {
         }
 
         // called without the lock to avoid deadlock potential if handlers need to acquire locks
+        /**
+         * 触发完成请求回调函数
+         */
         firePendingCompletedRequests();
 
         metadata.maybeThrowAnyException();
@@ -405,10 +423,15 @@ public class ConsumerNetworkClient implements Closeable {
     private void firePendingCompletedRequests() {
         boolean completedRequestsFired = false;
         for (;;) {
+            /**
+             * 获取已完成的请求回调Handler
+             * 请求完成时，调用RequestFutureCompletionHandler的onComplete方法回调时，会放入这个队列中
+             * org.apache.kafka.clients.consumer.internals.ConsumerNetworkClient.RequestFutureCompletionHandler#onComplete(org.apache.kafka.clients.ClientResponse)
+             */
             RequestFutureCompletionHandler completionHandler = pendingCompletion.poll();
             if (completionHandler == null)
                 break;
-
+            // 调用请求的对应回调函数
             completionHandler.fireCompletion();
             completedRequestsFired = true;
         }

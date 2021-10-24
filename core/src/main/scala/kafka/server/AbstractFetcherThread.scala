@@ -119,12 +119,17 @@ abstract class AbstractFetcherThread(name: String,
   }
 
   override def doWork(): Unit = {
+    /**
+     * 1. 先截断
+     * 2. fetch获取
+     */
     maybeTruncate()
     maybeFetch()
   }
 
   private def maybeFetch(): Unit = {
     val fetchRequestOpt = inLock(partitionMapLock) {
+      // 1. 构建Fetch请求的参数
       val ResultWithPartitions(fetchRequestOpt, partitionsWithError) = buildFetch(partitionStates.partitionStateMap.asScala)
 
       handlePartitionsWithErrors(partitionsWithError, "maybeFetch")
@@ -138,6 +143,7 @@ abstract class AbstractFetcherThread(name: String,
     }
 
     fetchRequestOpt.foreach { case ReplicaFetch(sessionPartitions, fetchRequest) =>
+      // 2. 执行发送请求
       processFetchRequest(sessionPartitions, fetchRequest)
     }
   }
@@ -159,13 +165,17 @@ abstract class AbstractFetcherThread(name: String,
     val partitionsWithoutEpochs = mutable.Set.empty[TopicPartition]
 
     partitionStates.partitionStateMap.forEach { (tp, state) =>
+      // state=Truncating 才需要执行截断
+      // 2.7前初始follower都要截断
       if (state.isTruncating) {
+        // 如果本地有leaderEpochCache
         latestEpoch(tp) match {
+          // 有时，且是0.11版本后(其实本来就是0.11后才有)
           case Some(epoch) if isOffsetForLeaderEpochSupported =>
             partitionsWithEpochs += tp -> new EpochData()
               .setPartition(tp.partition)
-              .setCurrentLeaderEpoch(state.currentLeaderEpoch)
-              .setLeaderEpoch(epoch)
+              .setCurrentLeaderEpoch(state.currentLeaderEpoch) // 就是follower当前epoch，也就是从controller接收到的，一般是现在集群中最新的（除非又发生一次切换）
+              .setLeaderEpoch(epoch) // 当前broker保存在磁盘的最大epoch
           case _ =>
             partitionsWithoutEpochs += tp
         }
@@ -176,10 +186,24 @@ abstract class AbstractFetcherThread(name: String,
   }
 
   private def maybeTruncate(): Unit = {
+    /**
+     * 获取2种分区
+     * partitionsWithEpochs: 有leaderEpochCache (0.11后)
+     * partitionsWithoutEpochs: 没有leaderEpochCache的（0.11(v2消息)前都没有）
+     */
     val (partitionsWithEpochs, partitionsWithoutEpochs) = fetchTruncatingPartitions()
+
+    /**
+     * 0.11一般采取的方式
+     * 就是避免高水位问题
+     */
     if (partitionsWithEpochs.nonEmpty) {
       truncateToEpochEndOffsets(partitionsWithEpochs)
     }
+
+    /**
+     * 0.11 前会截取到本地的HW
+     */
     if (partitionsWithoutEpochs.nonEmpty) {
       truncateToHighWatermark(partitionsWithoutEpochs)
     }
@@ -187,6 +211,7 @@ abstract class AbstractFetcherThread(name: String,
 
   private def doTruncate(topicPartition: TopicPartition, truncationState: OffsetTruncationState): Boolean = {
     try {
+      // 截取
       truncate(topicPartition, truncationState)
       true
     }
@@ -213,22 +238,42 @@ abstract class AbstractFetcherThread(name: String,
     *   occur during truncation.
     */
   private def truncateToEpochEndOffsets(latestEpochsForPartitions: Map[TopicPartition, EpochData]): Unit = {
+    /**
+     * 1. 请求对应的leader，向leader获取当前leaderEpochCache中最后的epoch的LEO
+     * --- 就是前面epoch的LEO以leader的为准
+     * --- 会把当前epoch也发送过去，用来校验接收到请求时是否又重新选举一次（是否与最新的一样）
+     */
     val endOffsets = fetchEpochEndOffsets(latestEpochsForPartitions)
     //Ensure we hold a lock during truncation.
     inLock(partitionMapLock) {
       //Check no leadership and no leader epoch changes happened whilst we were unlocked, fetching epochs
+      /**
+       * 2. 过滤掉发送又重新选举的分区LEO
+       */
       val epochEndOffsets = endOffsets.filter { case (tp, _) =>
         val curPartitionState = partitionStates.stateValue(tp)
         val partitionEpochRequest = latestEpochsForPartitions.getOrElse(tp, {
           throw new IllegalStateException(
             s"Leader replied with partition $tp not requested in OffsetsForLeaderEpoch request")
         })
+        // 请求时本地的epoch
         val leaderEpochInRequest = partitionEpochRequest.currentLeaderEpoch
+        // 判断是否分区又重新选举了
         curPartitionState != null && leaderEpochInRequest == curPartitionState.currentLeaderEpoch
       }
 
+      /**
+       * 3. 截断操作
+       */
       val ResultWithPartitions(fetchOffsets, partitionsWithError) = maybeTruncateToEpochEndOffsets(epochEndOffsets, latestEpochsForPartitions)
+      /**
+       * 4. 对那里最新epoch已发送改变的分区进行处理（不能进入执行节点）
+       */
       handlePartitionsWithErrors(partitionsWithError, "truncateToEpochEndOffsets")
+
+      /**
+       * 5. 更新对应分区的Fetch状态，使得完成截断的分区可以进行fetch操作
+       */
       updateFetchOffsetAndMaybeMarkTruncationComplete(fetchOffsets)
     }
   }
@@ -248,6 +293,7 @@ abstract class AbstractFetcherThread(name: String,
     for (tp <- partitions) {
       val partitionState = partitionStates.stateValue(tp)
       if (partitionState != null) {
+        // 原来设置的时候就是HW
         val highWatermark = partitionState.fetchOffset
         val truncationState = OffsetTruncationState(highWatermark, truncationCompleted = true)
 
@@ -260,6 +306,8 @@ abstract class AbstractFetcherThread(name: String,
     updateFetchOffsetAndMaybeMarkTruncationComplete(fetchOffsets)
   }
 
+  // fetchedEpochs:响应返回
+  // latestEpochsForPartitions: 请求的
   private def maybeTruncateToEpochEndOffsets(fetchedEpochs: Map[TopicPartition, EpochEndOffset],
                                              latestEpochsForPartitions: Map[TopicPartition, EpochData]): ResultWithPartitions[Map[TopicPartition, OffsetTruncationState]] = {
     val fetchOffsets = mutable.HashMap.empty[TopicPartition, OffsetTruncationState]
@@ -267,11 +315,24 @@ abstract class AbstractFetcherThread(name: String,
 
     fetchedEpochs.forKeyValue { (tp, leaderEpochOffset) =>
       Errors.forCode(leaderEpochOffset.errorCode) match {
+        /**
+         * 正确的
+         */
         case Errors.NONE =>
+
+          /**
+           * 1. 判断需要截取到的offset
+           */
           val offsetTruncationState = getOffsetTruncationState(tp, leaderEpochOffset)
+
+          /**
+           * 2. 执行截取
+           * 3. 完成放入fetchOffsets中
+           */
           if (doTruncate(tp, offsetTruncationState))
             fetchOffsets.put(tp, offsetTruncationState)
 
+        // 下面是错误的
         case Errors.FENCED_LEADER_EPOCH =>
           val currentLeaderEpoch = latestEpochsForPartitions.get(tp)
             .map(epochEndOffset => Int.box(epochEndOffset.currentLeaderEpoch)).asJava
@@ -314,6 +375,7 @@ abstract class AbstractFetcherThread(name: String,
 
     try {
       trace(s"Sending fetch request $fetchRequest")
+      // 向leader发送fetch请求
       responseData = fetchFromLeader(fetchRequest)
     } catch {
       case t: Throwable =>
@@ -330,9 +392,11 @@ abstract class AbstractFetcherThread(name: String,
     }
     fetcherStats.requestRate.mark()
 
+    // 处理响应
     if (responseData.nonEmpty) {
       // process fetched data
       inLock(partitionMapLock) {
+        // 遍历响应结果中每个分区
         responseData.forKeyValue { (topicPartition, partitionData) =>
           Option(partitionStates.stateValue(topicPartition)).foreach { currentFetchState =>
             // It's possible that a partition is removed and re-added or truncated when there is a pending fetch request.
@@ -341,21 +405,46 @@ abstract class AbstractFetcherThread(name: String,
             val fetchPartitionData = sessionPartitions.get(topicPartition)
             if (fetchPartitionData != null && fetchPartitionData.fetchOffset == currentFetchState.fetchOffset && currentFetchState.isReadyForFetch) {
               partitionData.error match {
+                /**
+                 * 正常处理
+                 */
                 case Errors.NONE =>
                   try {
                     // Once we hand off the partition data to the subclass, we can't mess with it any more in this thread
+                    /**
+                     * 处理响应结果：
+                     * 1. append写入
+                     * 2. 更新本地HW
+                     */
                     val logAppendInfoOpt = processPartitionData(topicPartition, currentFetchState.fetchOffset,
                       partitionData)
 
                     logAppendInfoOpt.foreach { logAppendInfo =>
                       val validBytes = logAppendInfo.validBytes
+                      /**
+                       * 下次fetch的Offset（也可以想成就是follower当前的LEO）
+                       * 如果本次fecth有消息返回，变为最后+1，没有则还是原fetchOffset
+                       */
                       val nextOffset = if (validBytes > 0) logAppendInfo.lastOffset + 1 else currentFetchState.fetchOffset
+                      /**
+                       * 距离leader的HW差距lag，也就是ISR的距离
+                       * lag小于等于0，代表follower在ISR
+                       * 大于，就是不在ISR
+                       */
                       val lag = Math.max(0L, partitionData.highWatermark - nextOffset)
+
+                      /**
+                       * 更新fetcherLagStats
+                       */
                       fetcherLagStats.getAndMaybePut(topicPartition).lag = lag
 
                       // ReplicaDirAlterThread may have removed topicPartition from the partitionStates after processing the partition data
                       if (validBytes > 0 && partitionStates.contains(topicPartition)) {
                         // Update partitionStates only if there is no exception during processPartitionData
+                        /**
+                         * 更新新的fetch状态：
+                         * fetchOffset就是刚刚计算的fetchOffset（即当前的LEO）
+                         */
                         val newFetchState = PartitionFetchState(nextOffset, Some(lag),
                           currentFetchState.currentLeaderEpoch, state = Fetching,
                           logAppendInfo.lastLeaderEpoch)
@@ -470,6 +559,11 @@ abstract class AbstractFetcherThread(name: String,
       currentState
     } else if (initialFetchState.initOffset < 0) {
       fetchOffsetAndTruncate(tp, initialFetchState.currentLeaderEpoch)
+      /**
+       * 2.7 后，根据本地是否有epoch来生成状态
+       * initialFetchState.currentLeaderEpoch: controller发过来的epoch
+       * lastFetchedEpoch：leaderEpochCache保存的最新的
+        */
     } else if (isTruncationOnFetchSupported) {
       // With old message format, `latestEpoch` will be empty and we use Truncating state
       // to truncate to high watermark.
@@ -478,6 +572,9 @@ abstract class AbstractFetcherThread(name: String,
       PartitionFetchState(initialFetchState.initOffset, None, initialFetchState.currentLeaderEpoch,
           state, lastFetchedEpoch)
     } else {
+      /**
+       * 2.7之前，初始状态肯定是Truncating（需要截断），
+       */
       PartitionFetchState(initialFetchState.initOffset, None, initialFetchState.currentLeaderEpoch,
         state = Truncating, lastFetchedEpoch = None)
     }
@@ -486,14 +583,24 @@ abstract class AbstractFetcherThread(name: String,
   def addPartitions(initialFetchStates: Map[TopicPartition, InitialFetchState]): Set[TopicPartition] = {
     partitionMapLock.lockInterruptibly()
     try {
+      // failedPartitions去除本次的分区（key就是分区）,等于重置
       failedPartitions.removeAll(initialFetchStates.keySet)
 
       initialFetchStates.forKeyValue { (tp, initialFetchState) =>
         val currentState = partitionStates.stateValue(tp)
+        /**
+         * 初始化对分区的初始状态！！！
+         * 2.7 前，state肯定是Truncating，需要先截断
+         * 2.7后，如果有本地有leaderEpoch，就可以先Fetching
+         */
         val updatedState = partitionFetchState(tp, initialFetchState, currentState)
+        // 更新状态
         partitionStates.updateAndMoveToEnd(tp, updatedState)
       }
 
+      /**
+       * 启动本fetcher线程的fetch请求操作
+       */
       partitionMapCond.signalAll()
       initialFetchStates.keySet
     } finally partitionMapLock.unlock()
@@ -511,10 +618,19 @@ abstract class AbstractFetcherThread(name: String,
         val maybeTruncationComplete = fetchOffsets.get(topicPartition) match {
           case Some(offsetTruncationState) =>
             val lastFetchedEpoch = latestEpoch(topicPartition)
+            /**
+             * 更新同步操作的状态，一般都是变成Fetching，但是有一个情况还是继续执行截断：
+             * leader返回的epoch在follower中，但是有follower有比这个epoch小的
+             */
             val state = if (isTruncationOnFetchSupported || offsetTruncationState.truncationCompleted)
               Fetching
             else
               Truncating
+
+            /**
+             * 生成对应分区fetch状态，fetch的offset从这次截取的offset开始
+             * lastFetchedEpoch还是当前follower中leaderEpochCache最大的（因为向leader获取过这个epoch的LEO）
+              */
             PartitionFetchState(offsetTruncationState.offset, currentFetchState.lag,
               currentFetchState.currentLeaderEpoch, currentFetchState.delay, state, lastFetchedEpoch)
           case None => currentFetchState
@@ -533,19 +649,40 @@ abstract class AbstractFetcherThread(name: String,
    *  -- If the leader replied with undefined epoch offset, we must use the high watermark. This can
    *  happen if 1) the leader is still using message format older than KAFKA_0_11_0; 2) the follower
    *  requested leader epoch < the first leader epoch known to the leader.
+   *
+   *  leader返回未定义epoch，此时使用本地的HW（截断），这种情况是发生在：
+   *  1) 依然使用0.11前的版本
+   *  2）follower请求的epoch < leader中保存的第一个epoch
+   *
    *  -- If the leader replied with the valid offset but undefined leader epoch, we truncate to
    *  leader's offset if it is lower than follower's Log End Offset. This may happen if the
    *  leader is on the inter-broker protocol version < KAFKA_2_0_IV0
+   *
+   * leader返回了offset，但是leader epoch还是未定义epoch
+   * 如果leader返回的offset小于follower当前LEO，会截取到这个leader offset
+   * 发生在：2.0前
+   * 可能原因：这个可能是follower
+   *
    *  -- If the leader replied with leader epoch not known to the follower, we truncate to the
    *  end offset of the largest epoch that is smaller than the epoch the leader replied with, and
    *  send OffsetsForLeaderEpochRequest with that leader epoch. In a more rare case, where the
    *  follower was not tracking epochs smaller than the epoch the leader replied with, we
    *  truncate the leader's offset (and do not send any more leader epoch requests).
+   *
+   *  leader返回了follower未知的epoch（可能中间空缺），需要截断到 比"leader 返回的epoch"小中最大的epoch的末尾offset
+   *  然后用leader返回epoch发送OffsetsForLeaderEpochRequest
+   *  很少情况下，follower的epoch不小于leader返回的，这时只需要截取到leader的offset，也不用发送请求。
+   *
    *  -- Otherwise, truncate to min(leader's offset, end offset on the follower for epoch that
    *  leader replied with, follower's Log End Offset).
+   *  剩下的情况下（leader返回epoch是follower有的），截取以下这些offset中最小的：
+   *  1) leader返回的offset
+   *  2) leader返回的epoch在follower的末尾offset
+   *  3) follower自己的LEO
+   *
    *
    * @param tp                    Topic partition
-   * @param leaderEpochOffset     Epoch end offset received from the leader for this topic partition
+   * @param leaderEpochOffset     Epoch end offset received from the leader for this topic partition 响应返回的
    */
   private def getOffsetTruncationState(tp: TopicPartition,
                                        leaderEpochOffset: EpochEndOffset): OffsetTruncationState = inLock(partitionMapLock) {
@@ -556,19 +693,35 @@ abstract class AbstractFetcherThread(name: String,
       // replica's partition state to 'truncating' and sets initial offset to its truncation offset)
       warn(s"Based on replica's leader epoch, leader replied with an unknown offset in $tp. " +
            s"The initial fetch offset ${partitionStates.stateValue(tp).fetchOffset} will be used for truncation.")
+      /**
+       * 无有效offset返回，使用fetchOffset（也就是HW）作为截取offset
+       */
       OffsetTruncationState(partitionStates.stateValue(tp).fetchOffset, truncationCompleted = true)
     } else if (leaderEpochOffset.leaderEpoch == UNDEFINED_EPOCH) {
       // either leader or follower or both use inter-broker protocol version < KAFKA_2_0_IV0
       // (version 0 of OffsetForLeaderEpoch request/response)
       warn(s"Leader or replica is on protocol version where leader epoch is not considered in the OffsetsForLeaderEpoch response. " +
            s"The leader's offset ${leaderEpochOffset.endOffset} will be used for truncation in $tp.")
+
+      /**
+       * 无有效epoch返回，使用返回的leader LEO 与 当前follower LEO的最小值作为 截取offset
+       */
       OffsetTruncationState(min(leaderEpochOffset.endOffset, logEndOffset(tp)), truncationCompleted = true)
+
+      /**
+       * 正常
+       */
     } else {
+      // 当前本地LEO
       val replicaEndOffset = logEndOffset(tp)
 
       // get (leader epoch, end offset) pair that corresponds to the largest leader epoch
       // less than or equal to the requested epoch.
+      /**
+       * endOffsetForEpoch:获取'目标epoch'(其实就是当前cache中最大的or前面值) 在本地LeaderEpochCache的LEO
+       */
       endOffsetForEpoch(tp, leaderEpochOffset.leaderEpoch) match {
+        // 找到了
         case Some(OffsetAndEpoch(followerEndOffset, followerEpoch)) =>
           if (followerEpoch != leaderEpochOffset.leaderEpoch) {
             // the follower does not know about the epoch that leader replied with
@@ -578,11 +731,28 @@ abstract class AbstractFetcherThread(name: String,
             info(s"Based on replica's leader epoch, leader replied with epoch ${leaderEpochOffset.leaderEpoch} " +
               s"unknown to the replica for $tp. " +
               s"Will truncate to $intermediateOffsetToTruncateTo and send another leader epoch request to the leader.")
+            /**
+             * follower找到的epoch与 leader 返回的epoch不一致
+             * （请求时的epoch中follower没有，然后返回了比请求的小的，这里找的时候返回的也没有，找到了个比返回的小的）
+             * 情况：节点保存的cache中间有空缺，可能follower新加入，然后leader在follower加入时不在，就是此时返回的 < 本地的。
+             * 截取到本地中比leader返回的epoch小中最大的LEO（cache中对应LEO or 当前LEO 的最小值，因为此时从cache中拿到的肯定比leader返回的小）
+             * 然后还要发送一次请求
+             */
             OffsetTruncationState(intermediateOffsetToTruncateTo, truncationCompleted = false)
           } else {
             val offsetToTruncateTo = min(followerEndOffset, leaderEpochOffset.endOffset)
+
+            /**
+             * 本地有leader返回的epoch:
+             * 截取到三者的最小值：
+             * 1）epoch在cache（文件）中的LEO（前一个的startOffset）
+             * 2) leader中对应的LEO
+             * 3) 当前LEO（因为还没有同步）
+             * 然后发送请求
+             */
             OffsetTruncationState(min(offsetToTruncateTo, replicaEndOffset), truncationCompleted = true)
           }
+          // 没有
         case None =>
           // This can happen if the follower was not tracking leader epochs at that point (before the
           // upgrade, or if this broker is new). Since the leader replied with epoch <
@@ -591,6 +761,11 @@ abstract class AbstractFetcherThread(name: String,
           warn(s"Based on replica's leader epoch, leader replied with epoch ${leaderEpochOffset.leaderEpoch} " +
             s"below any replica's tracked epochs for $tp. " +
             s"The leader's offset only ${leaderEpochOffset.endOffset} will be used for truncation.")
+
+          /**
+           * 如上面的follower找到的epoch与 leader 返回的epoch不一致, 就是直接没找到小于等于leader返回epoch
+           * 截取到leader返回的LEO、当前LEO的最小值
+           */
           OffsetTruncationState(min(leaderEpochOffset.endOffset, replicaEndOffset), truncationCompleted = true)
       }
     }

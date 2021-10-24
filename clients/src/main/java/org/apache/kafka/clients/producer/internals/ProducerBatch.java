@@ -102,6 +102,8 @@ public final class ProducerBatch {
      */
     public FutureRecordMetadata tryAppend(long timestamp, byte[] key, byte[] value, Header[] headers, Callback callback, long now) {
         // 判断batch中是否有足够空间插入
+        // 1。已经关闭
+        // 2。已超过16KB
         if (!recordsBuilder.hasRoomFor(timestamp, key, value, headers)) {
             // 空间不够，返回null
             return null;
@@ -118,6 +120,7 @@ public final class ProducerBatch {
                                                                    Time.SYSTEM);
             // we have to keep every future returned to the users in case the batch needs to be
             // split to several new batches and resent.
+            // 回调函数
             thunks.add(new Thunk(callback, future));
             this.recordCount++;
             return future;
@@ -196,6 +199,7 @@ public final class ProducerBatch {
             log.trace("Failed to produce messages to {} with base offset {}.", topicPartition, baseOffset, exception);
         }
 
+        // 更新finalState，后面用于判断请求是否完成
         if (this.finalState.compareAndSet(null, tryFinalState)) {
             completeFutureAndFireCallbacks(baseOffset, logAppendTime, exception);
             return true;

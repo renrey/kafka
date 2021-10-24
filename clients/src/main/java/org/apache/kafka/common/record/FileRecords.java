@@ -184,7 +184,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (records.sizeInBytes() > Integer.MAX_VALUE - size.get())
             throw new IllegalArgumentException("Append of size " + records.sizeInBytes() +
                     " bytes is too large for segment with current file position at " + size.get());
-
+        // 写入channel
         int written = records.writeFullyTo(channel);
         size.getAndAdd(written);
         return written;
@@ -301,6 +301,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
         long position = start + offset;
         long count = Math.min(length, oldSize - offset);
+        /**
+         * FileChannel.transferTo : sendFile，零拷贝
+         */
         return destChannel.transferFrom(channel, position, count);
     }
 
@@ -313,8 +316,12 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @param startingPosition The starting position in the file to begin searching from.
      */
     public LogOffsetPosition searchForOffsetWithSize(long targetOffset, int startingPosition) {
+        // 从指定物理位置开始的batch开始往后寻找
         for (FileChannelRecordBatch batch : batchesFrom(startingPosition)) {
+            // 当前batch的最后消息offset
+            // batch的baseOffset（第一条消息的） + lastOffsetDelta（batch多少条消息）
             long offset = batch.lastOffset();
+            // batch的lastOffset 大于等于target，就是要找的
             if (offset >= targetOffset)
                 return new LogOffsetPosition(offset, batch.position(), batch.sizeInBytes());
         }
@@ -475,8 +482,11 @@ public class FileRecords extends AbstractRecords implements Closeable {
     }
 
     public static class LogOffsetPosition {
+        // 准确的offset
         public final long offset;
+        // 开始物理位置
         public final int position;
+        // 大小
         public final int size;
 
         public LogOffsetPosition(long offset, int position, int size) {

@@ -189,9 +189,10 @@ public class DefaultRecord implements Record {
 
         /**
          * 计算内容的大小：
+         * 下面内容大小size（int）
          * attributes（1字节）
-         * offsetDelta（int）
          * timestampDelta（long）
+         * offsetDelta（int）
          * keySize （int）+key
          * valueSize （int）+ value
          * headerLength + header

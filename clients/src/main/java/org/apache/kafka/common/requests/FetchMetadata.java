@@ -115,6 +115,7 @@ public class FetchMetadata {
 
     /**
      * Return the metadata for the next error response.
+     * 出现一次错误，就把epoch重置0
      */
     public FetchMetadata nextCloseExisting() {
         return new FetchMetadata(sessionId, INITIAL_EPOCH);

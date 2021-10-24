@@ -1836,10 +1836,13 @@ class KafkaConfig(val props: java.util.Map[_, _], doLog: Boolean, dynamicConfigO
   // If none of these are defined, we'll use the listeners
   def advertisedListeners: Seq[EndPoint] = {
     val advertisedListenersProp = getString(KafkaConfig.AdvertisedListenersProp)
+    // 设置了就用advertised listeners
     if (advertisedListenersProp != null)
       CoreUtils.listenerListToEndPoints(advertisedListenersProp, listenerSecurityProtocolMap, requireDistinctPorts=false)
+    // advertised的host或者port配置了
     else if (getString(KafkaConfig.AdvertisedHostNameProp) != null || getInt(KafkaConfig.AdvertisedPortProp) != null)
       CoreUtils.listenerListToEndPoints("PLAINTEXT://" + advertisedHostName + ":" + advertisedPort, listenerSecurityProtocolMap, requireDistinctPorts=false)
+    // 都没配置直接用listeners的，不能是controllerListener
     else
       listeners.filterNot(l => controllerListenerNames.contains(l.listenerName.value()))
   }

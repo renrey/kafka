@@ -156,6 +156,7 @@ public class Selector implements Selectable, AutoCloseable {
             MemoryPool memoryPool,
             LogContext logContext) {
         try {
+            // 开启java nio selector
             this.nioSelector = java.nio.channels.Selector.open();
         } catch (IOException e) {
             throw new KafkaException(e);
@@ -672,7 +673,14 @@ public class Selector implements Selectable, AutoCloseable {
     // package-private for testing
     void write(KafkaChannel channel) throws IOException {
         String nodeId = channel.id();
+        /**
+         * 写入数据
+         */
         long bytesSent = channel.write();
+        /**
+         * 校验完成发送，移除OP_WRITE
+         * channel的send对象移除
+         */
         NetworkSend send = channel.maybeCompleteSend();
         // We may complete the send with bytesSent < 1 if `TransportLayer.hasPendingWrites` was true and `channel.write()`
         // caused the pending writes to be written to the socket channel buffer

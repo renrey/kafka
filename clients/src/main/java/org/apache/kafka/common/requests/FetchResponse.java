@@ -332,6 +332,7 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
                                                                        Iterator<Map.Entry<TopicPartition, PartitionData<T>>> partIterator,
                                                                        int sessionId) {
         List<FetchResponseData.FetchableTopicResponse> topicResponseList = new ArrayList<>();
+        // 遍历partition
         partIterator.forEachRemaining(entry -> {
             PartitionData<T> partitionData = entry.getValue();
             // Since PartitionData alone doesn't know the partition ID, we set it here
@@ -351,6 +352,7 @@ public class FetchResponse<T extends BaseRecords> extends AbstractResponse {
             }
         });
 
+        // 全部实际data放入到topicResponseList
         return new FetchResponseData()
                 .setThrottleTimeMs(throttleTimeMs)
                 .setErrorCode(error.code())

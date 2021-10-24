@@ -104,6 +104,7 @@ class LogManager(logDirs: Seq[File],
   }
 
   private val dirLocks = lockLogDirs(liveLogDirs)
+  // recovery-point-offset-checkpoint
   @volatile private var recoveryPointCheckpoints = liveLogDirs.map(dir =>
     (dir, new OffsetCheckpointFile(new File(dir, RecoveryPointCheckpointFile), logDirFailureChannel))).toMap
   @volatile private var logStartOffsetCheckpoints = liveLogDirs.map(dir =>
@@ -253,11 +254,18 @@ class LogManager(logDirs: Seq[File],
                            recoveryPoints: Map[TopicPartition, Long],
                            logStartOffsets: Map[TopicPartition, Long],
                            topicConfigOverrides: Map[String, LogConfig]): Log = {
+    // 转成分区信息
     val topicPartition = Log.parseTopicPartitionName(logDir)
+    // topic配置
     val config = topicConfigOverrides.getOrElse(topicPartition.topic, currentDefaultConfig)
+    // 本地的recoveryPoint
     val logRecoveryPoint = recoveryPoints.getOrElse(topicPartition, 0L)
+    // 本地的logStartOffset
     val logStartOffset = logStartOffsets.getOrElse(topicPartition, 0L)
 
+    /**
+     * 创建log，就是加载文件
+     */
     val log = Log(
       dir = logDir,
       config = config,
@@ -275,6 +283,9 @@ class LogManager(logDirs: Seq[File],
     if (logDir.getName.endsWith(Log.DeleteDirSuffix)) {
       addLogToBeDeleted(log)
     } else {
+      /**
+       * 保存到Log的map中
+       */
       val previous = {
         if (log.isFuture)
           this.futureLogs.put(topicPartition, log)
@@ -305,16 +316,21 @@ class LogManager(logDirs: Seq[File],
     val offlineDirs = mutable.Set.empty[(String, IOException)]
     val jobs = ArrayBuffer.empty[Seq[Future[_]]]
     var numTotalLogs = 0
-
+    // 进入log.dir目录
     for (dir <- liveLogDirs) {
       val logDirAbsolutePath = dir.getAbsolutePath
       var hadCleanShutdown: Boolean = false
       try {
+        // 线程池
         val pool = Executors.newFixedThreadPool(numRecoveryThreadsPerDataDir)
         threadPools.append(pool)
 
+        // .kafka_cleanshutdown文件
         val cleanShutdownFile = new File(dir, Log.CleanShutdownFile)
         if (cleanShutdownFile.exists) {
+          // .kafka_cleanshutdown存在，证明是正常关闭
+          // 1. 把文件删除
+          // 2. 标记正常关闭
           info(s"Skipping recovery for all logs in $logDirAbsolutePath since clean shutdown file was found")
           // Cache the clean shutdown status and use that for rest of log loading workflow. Delete the CleanShutdownFile
           // so that if broker crashes while loading the log, it is considered hard shutdown during the next boot up. KAFKA-10471
@@ -327,6 +343,9 @@ class LogManager(logDirs: Seq[File],
 
         var recoveryPoints = Map[TopicPartition, Long]()
         try {
+          /**
+           * 从recovery-point-offset-checkpoint文件读取每个分区的recoveryPoint
+           */
           recoveryPoints = this.recoveryPointCheckpoints(dir).read()
         } catch {
           case e: Exception =>
@@ -334,6 +353,9 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting the recovery checkpoint to 0", e)
         }
 
+        /**
+         * 从log-start-offset-checkpoint文件读取每个分区的logStartOffset
+         */
         var logStartOffsets = Map[TopicPartition, Long]()
         try {
           logStartOffsets = this.logStartOffsetCheckpoints(dir).read()
@@ -343,17 +365,26 @@ class LogManager(logDirs: Seq[File],
               s"$logDirAbsolutePath, resetting to the base offset of the first segment", e)
         }
 
+        /**
+         * 获取log.dir目录所有的目录（分区），作为需要加载的log目录
+         */
         val logsToLoad = Option(dir.listFiles).getOrElse(Array.empty).filter(logDir =>
           logDir.isDirectory && Log.parseTopicPartitionName(logDir).topic != KafkaRaftServer.MetadataTopic)
         val numLogsLoaded = new AtomicInteger(0)
         numTotalLogs += logsToLoad.length
 
+        /**
+         * 为每个分区log目录都生成 一个加载log的任务
+         */
         val jobsForDir = logsToLoad.map { logDir =>
           val runnable: Runnable = () => {
             try {
               debug(s"Loading log $logDir")
 
               val logLoadStartMs = time.hiResClockMs()
+              /**
+               * 加载分区log进行恢复
+               */
               val log = loadLog(logDir, hadCleanShutdown, recoveryPoints, logStartOffsets, topicConfigOverrides)
               val logLoadDurationMs = time.hiResClockMs() - logLoadStartMs
               val currentNumLoaded = numLogsLoaded.incrementAndGet()
@@ -369,6 +400,9 @@ class LogManager(logDirs: Seq[File],
           runnable
         }
 
+        /**
+         * 提交所有任务到线程池
+         */
         jobs += jobsForDir.map(pool.submit)
       } catch {
         case e: IOException =>
@@ -378,6 +412,9 @@ class LogManager(logDirs: Seq[File],
     }
 
     try {
+      /**
+       * 等待所有任务执行完成
+       */
       for (dirJobs <- jobs) {
         dirJobs.foreach(_.get)
       }
@@ -400,6 +437,8 @@ class LogManager(logDirs: Seq[File],
    *  Start the background threads to flush logs and do log cleanup
    */
   def startup(topicNames: Set[String]): Unit = {
+    // 1. fetchTopicConfigOverrides: 从zk获取每个topic的配置（/config/topic/${name}）
+    // 2. 启动
     startupWithConfigOverrides(fetchTopicConfigOverrides(topicNames))
   }
 
@@ -420,9 +459,21 @@ class LogManager(logDirs: Seq[File],
 
   // visible for testing
   private[log] def startupWithConfigOverrides(topicConfigOverrides: Map[String, LogConfig]): Unit = {
+    /**
+     * 1. 加载当前所有的topic的log
+     * --- 注意：topic是从zk来的，zk没有的不会加载
+     */
     loadLogs(topicConfigOverrides) // this could take a while if shutdown was not clean
 
     /* Schedule the cleanup task to delete old logs */
+    /**
+     * 2. 启动定时任务
+     * log-retention: log清理
+     * log-flusher : log刷盘
+     * recovery-point-checkpoint: recoveryPoint写入
+     * log-start-offset-checkpoint: logStartOffset写入
+     * delete-logs: 删除log
+     */
     if (scheduler != null) {
       info("Starting log cleanup with a period of %d ms.".format(retentionCheckMs))
       scheduler.schedule("kafka-log-retention",
@@ -535,6 +586,7 @@ class LogManager(logDirs: Seq[File],
   def truncateTo(partitionOffsets: Map[TopicPartition, Long], isFuture: Boolean): Unit = {
     val affectedLogs = ArrayBuffer.empty[Log]
     for ((topicPartition, truncateOffset) <- partitionOffsets) {
+      // 获取log
       val log = {
         if (isFuture)
           futureLogs.get(topicPartition)
@@ -544,10 +596,20 @@ class LogManager(logDirs: Seq[File],
       // If the log does not exist, skip it
       if (log != null) {
         // May need to abort and pause the cleaning of the log, and resume after truncation is done.
+
+        // 判断是否需要先暂停cleaner
+        // 暂停条件：截取offset < 当前segment的baseOffset
         val needToStopCleaner = truncateOffset < log.activeSegment.baseOffset
-        if (needToStopCleaner && !isFuture)
+        if (needToStopCleaner && !isFuture) {
+          /**
+           * 1。暂停cleaner
+           */
           abortAndPauseCleaning(topicPartition)
+        }
         try {
+          /**
+           * 2。进行截取
+           */
           if (log.truncateTo(truncateOffset))
             affectedLogs += log
           if (needToStopCleaner && !isFuture)
@@ -600,9 +662,12 @@ class LogManager(logDirs: Seq[File],
    * to avoid recovering the whole log on startup.
    */
   def checkpointLogRecoveryOffsets(): Unit = {
+    // 所有log对象
     val logsByDirCached = logsByDir
     liveLogDirs.foreach { logDir =>
+      // log.dir目录的所有分区log对象
       val logsToCheckpoint = logsInDir(logsByDirCached, logDir)
+      // 把目前所有log的recoveryPoint写入磁盘
       checkpointRecoveryOffsetsInDir(logDir, logsToCheckpoint)
     }
   }
@@ -659,8 +724,10 @@ class LogManager(logDirs: Seq[File],
     try {
       logStartOffsetCheckpoints.get(logDir).foreach { checkpoint =>
         val logStartOffsets = logsToCheckpoint.collect {
+          // 必须当前的logStartOffset> 第一个Segment的baseOffset，才会写入
           case (tp, log) if log.logStartOffset > log.logSegments.head.baseOffset => tp -> log.logStartOffset
         }
+        // 重新写入磁盘，且刷盘
         checkpoint.write(logStartOffsets)
       }
     } catch {
@@ -673,8 +740,10 @@ class LogManager(logDirs: Seq[File],
   def maybeUpdatePreferredLogDir(topicPartition: TopicPartition, logDir: String): Unit = {
     // Do not cache the preferred log directory if either the current log or the future log for this partition exists in the specified logDir
     if (!getLog(topicPartition).exists(_.parentDir == logDir) &&
-        !getLog(topicPartition, isFuture = true).exists(_.parentDir == logDir))
+        !getLog(topicPartition, isFuture = true).exists(_.parentDir == logDir)) {
+      // logDir就是log.dirs，第一级日志目录
       preferredLogDirs.put(topicPartition, logDir)
+    }
   }
 
   /**
@@ -780,11 +849,17 @@ class LogManager(logDirs: Seq[File],
    */
   def getOrCreateLog(topicPartition: TopicPartition, isNew: Boolean = false, isFuture: Boolean = false): Log = {
     logCreationOrDeletionLock synchronized {
+      // 获取对应分区的log
       getLog(topicPartition, isFuture).getOrElse {
+        /**
+         * 没有就进行创建
+         */
+
         // create the log if it has not already been created in another thread
         if (!isNew && offlineLogDirs.nonEmpty)
           throw new KafkaStorageException(s"Can not create log for $topicPartition because log directories ${offlineLogDirs.mkString(",")} are offline")
 
+        // log目录的File对象list
         val logDirs: List[File] = {
           val preferredLogDir = preferredLogDirs.get(topicPartition)
 
@@ -801,21 +876,29 @@ class LogManager(logDirs: Seq[File],
             nextLogDirs()
         }
 
+        // log目录名称
         val logDirName = {
           if (isFuture)
             Log.logFutureDirName(topicPartition)
-          else
+          else {
+            // 子目录：topic-partition
             Log.logDirName(topicPartition)
+          }
         }
 
+        /**
+         * 创建分区的log目录：
+         * 父目录（log.dir）/topic名-partition名
+         */
         val logDir = logDirs
           .iterator // to prevent actually mapping the whole list, lazy map
-          .map(createLogDirectory(_, logDirName))
+          .map(createLogDirectory(_, logDirName)) // 实际这个方法创建
           .find(_.isSuccess)
           .getOrElse(Failure(new KafkaStorageException("No log directories available. Tried " + logDirs.map(_.getAbsolutePath).mkString(", "))))
           .get // If Failure, will throw
 
         val config = fetchLogConfig(topicPartition.topic)
+        // 创建log对象
         val log = Log(
           dir = logDir,
           config = config,

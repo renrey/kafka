@@ -143,6 +143,7 @@ class RequestHandlerHelper(requestChannel: RequestChannel,
                                  response: AbstractResponse,
                                  onComplete: Option[Send => Unit] = None): Unit = {
     quotas.request.maybeRecordExempt(request)
+    // 发送响应
     sendResponse(request, Some(response), onComplete)
   }
 
@@ -180,16 +181,20 @@ class RequestHandlerHelper(requestChannel: RequestChannel,
 
     val response = responseOpt match {
       case Some(response) =>
+        // 1。构建SendResponse对象（提交到待响应的队列）
         new RequestChannel.SendResponse(
           request,
           request.buildResponseSend(response),
           request.responseNode(response),
-          onComplete
+          onComplete // 回调
         )
       case None =>
         new RequestChannel.NoOpResponse(request)
     }
 
+    /**
+     * 2。提交指定的processor队列responseQueue
+     */
     requestChannel.sendResponse(response)
   }
 }

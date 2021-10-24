@@ -214,6 +214,10 @@ public class PlaintextTransportLayer implements TransportLayer {
 
     @Override
     public long transferFrom(FileChannel fileChannel, long position, long count) throws IOException {
+        /**
+         * 使用java.nio.channels.FileChannel#transferTo(long, long, java.nio.channels.WritableByteChannel)
+         * 底层指令就是sendFile，零拷贝！！！
+         */
         return fileChannel.transferTo(position, count, socketChannel);
     }
 }

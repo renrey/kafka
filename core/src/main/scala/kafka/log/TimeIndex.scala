@@ -129,6 +129,7 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
       // We only append to the time index when the timestamp is greater than the last inserted timestamp.
       // If all the messages are in message format v0, the timestamp will always be NoTimestamp. In that case, the time
       // index will be empty.
+      // 必须比之前的时间大，才会生成
       if (timestamp > lastEntry.timestamp) {
         trace(s"Adding index entry $timestamp => $offset to ${file.getAbsolutePath}.")
         mmap.putLong(timestamp)
@@ -168,12 +169,16 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
   override def truncateTo(offset: Long): Unit = {
     inLock(lock) {
       val idx = mmap.duplicate
+      // 1. 使用二分查找，寻找小于等于offset的最大那个（自己or自己所在范围开头），这里是相对值
       val slot = largestLowerBoundSlotFor(idx, offset, IndexSearchType.VALUE)
 
       /* There are 3 cases for choosing the new size
        * 1) if there is no entry in the index <= the offset, delete everything
        * 2) if there is an entry for this exact offset, delete it and everything larger than it
        * 3) if there is no entry for this offset, delete everything larger than the next smallest
+       */
+      /**
+       * 2. 得出index索引需要截取到的entry
        */
       val newEntries =
         if(slot < 0)
@@ -182,6 +187,10 @@ class TimeIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writable:
           slot
         else
           slot + 1
+
+      /**
+       * 3.执行截取
+        */
       truncateToEntries(newEntries)
     }
   }

@@ -339,13 +339,13 @@ public class Sender implements Runnable {
         Cluster cluster = metadata.fetch();
         // get the list of partitions with data ready to send
         /**
-         * 生成可以发送batch的broker（校验时是校验batch是否可以发送）
+         * 1. 生成可以发送batch的broker（校验时是校验batch是否可以发送）
          */
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // if there are any partitions whose leaders are not known yet, force metadata update
         /**
-         * 内存中未知leader的topic，更新拉取标志
+         * 2. 内存中未知leader的topic，更新拉取标志
          */
         if (!result.unknownLeaderTopics.isEmpty()) {
             // The set of topics with unknown leader contains topics with leader election pending as well as
@@ -362,7 +362,9 @@ public class Sender implements Runnable {
 
         // remove any nodes we aren't ready to send to
         /**
-         * 清除刚刚获取的batch是否可以发送
+         * 3. 在刚刚可以发送batch的broker，过滤broker本次不能进行发送的：
+         * 1）网络未正常连接or建立
+         * 2）超过inflight数量，同时在发送的请求数量
          */
         Iterator<Node> iter = result.readyNodes.iterator();
         long notReadyTimeout = Long.MAX_VALUE;
@@ -377,7 +379,8 @@ public class Sender implements Runnable {
 
         // create produce requests
         /**
-         * 创建给每个broker需要发送的batch列表 （一个broker可能是多个partition的leader，上面的获取的时间只是返回了broker）
+         * 4. 获取给每个broker本次需要发送的batch列表 （一个broker可能是多个partition的leader，第一步只是返回了可以发送的broker）
+         * 从队列取出，加入到InflightBatches中
          */
         Map<Integer, List<ProducerBatch>> batches = this.accumulator.drain(cluster, result.readyNodes, this.maxRequestSize, now);
         addToInflightBatches(batches);
@@ -402,7 +405,7 @@ public class Sender implements Runnable {
         if (!expiredBatches.isEmpty())
             log.trace("Expired {} batches in accumulator", expiredBatches.size());
         /**
-         * 处理过期batch
+         * 5. 处理过期batch
          */
         for (ProducerBatch expiredBatch : expiredBatches) {
             String errorMessage = "Expiring " + expiredBatch.recordCount + " record(s) for " + expiredBatch.topicPartition
@@ -431,7 +434,9 @@ public class Sender implements Runnable {
             // otherwise the select time will be the time difference between now and the metadata expiry time;
             pollTimeout = 0;
         }
-        // 生成Request
+        /**
+         * 生成Request,提交
+         */
         sendProduceRequests(batches, now);
         return pollTimeout;
     }
@@ -598,11 +603,17 @@ public class Sender implements Runnable {
                                 .map(e -> new ProduceResponse.RecordError(e.batchIndex(), e.batchIndexErrorMessage()))
                                 .collect(Collectors.toList()),
                             p.errorMessage());
+                    /**
+                     * 涉及的batch完成completeBatch
+                     */
                     ProducerBatch batch = batches.get(tp);
                     completeBatch(batch, partResp, correlationId, now);
                 }));
                 this.sensors.recordLatency(response.destination(), response.requestLatencyMs());
             } else {
+                /**
+                 * ack=0，完成completeBatch，都是没错误响应（忽略）Errors.NONE
+                 */
                 // this is the acks = 0 case, just complete all requests
                 for (ProducerBatch batch : batches.values()) {
                     completeBatch(batch, new ProduceResponse.PartitionResponse(Errors.NONE), correlationId, now);
@@ -639,7 +650,9 @@ public class Sender implements Runnable {
             maybeRemoveAndDeallocateBatch(batch);
             this.sensors.recordBatchSplit();
         } else if (error != Errors.NONE) {
-            // 错误重试
+            /**
+             * 错误重试
+             */
             if (canRetry(batch, response, now)) {
                 log.warn(
                     "Got error produce response with correlation id {} on topic-partition {}, retrying ({} attempts left). Error: {}",
@@ -681,6 +694,7 @@ public class Sender implements Runnable {
                 metadata.requestUpdate();
             }
         } else {
+            // 正常响应
             completeBatch(batch, response);
         }
 
@@ -709,7 +723,12 @@ public class Sender implements Runnable {
         if (transactionManager != null) {
             transactionManager.handleCompletedBatch(batch, response);
         }
-
+        /**
+         * 当前batch完成处理：
+         * 1. 更新finalState，调用回调函数
+         * 2.inFlightBatches移除
+         * 3. 释放ByteBuffer
+         */
         if (batch.done(response.baseOffset, response.logAppendTime, null)) {
             maybeRemoveAndDeallocateBatch(batch);
         }
@@ -759,6 +778,7 @@ public class Sender implements Runnable {
      * Transfer the record batches into a list of produce requests on a per-node basis
      */
     private void sendProduceRequests(Map<Integer, List<ProducerBatch>> collated, long now) {
+        // 每个broker的请求
         for (Map.Entry<Integer, List<ProducerBatch>> entry : collated.entrySet())
             sendProduceRequest(now, entry.getKey(), acks, requestTimeoutMs, entry.getValue());
     }
@@ -769,7 +789,7 @@ public class Sender implements Runnable {
     private void sendProduceRequest(long now, int destination, short acks, int timeout, List<ProducerBatch> batches) {
         if (batches.isEmpty())
             return;
-
+        // 按照分区划分batch
         final Map<TopicPartition, ProducerBatch> recordsByPartition = new HashMap<>(batches.size());
 
         // find the minimum magic version used when creating the record sets
@@ -779,8 +799,10 @@ public class Sender implements Runnable {
                 minUsedMagic = batch.magic();
         }
         ProduceRequestData.TopicProduceDataCollection tpd = new ProduceRequestData.TopicProduceDataCollection();
+        // 归类每个分区的batch
         for (ProducerBatch batch : batches) {
             TopicPartition tp = batch.topicPartition;
+            // records就是Batch的流内容
             MemoryRecords records = batch.records();
 
             // down convert if necessary to the minimum magic used. In general, there can be a delay between the time
@@ -792,11 +814,15 @@ public class Sender implements Runnable {
             // which is supporting the new magic version to one which doesn't, then we will need to convert.
             if (!records.hasMatchingMagic(minUsedMagic))
                 records = batch.records().downConvert(minUsedMagic, 0, time).records();
+            // TopicProduceData设置name为topic名
             ProduceRequestData.TopicProduceData tpData = tpd.find(tp.topic());
             if (tpData == null) {
                 tpData = new ProduceRequestData.TopicProduceData().setName(tp.topic());
                 tpd.add(tpData);
             }
+            // TopicProduceData的partitionData设置
+            // index：分区编号
+            // records：batch内容
             tpData.partitionData().add(new ProduceRequestData.PartitionProduceData()
                     .setIndex(tp.partition())
                     .setRecords(records));
@@ -808,12 +834,16 @@ public class Sender implements Runnable {
             transactionalId = transactionManager.transactionalId();
         }
 
+        // topicdata:TopicProduceData数组
         ProduceRequest.Builder requestBuilder = ProduceRequest.forMagic(minUsedMagic,
                 new ProduceRequestData()
                         .setAcks(acks)
                         .setTimeoutMs(timeout)
                         .setTransactionalId(transactionalId)
                         .setTopicData(tpd));
+        /**
+         * 接收响应后的处理函数！！！
+         */
         RequestCompletionHandler callback = response -> handleProduceResponse(response, recordsByPartition, time.milliseconds());
 
         String nodeId = Integer.toString(destination);

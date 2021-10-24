@@ -21,7 +21,6 @@ import java.io.{File, IOException}
 import java.net.{InetAddress, SocketTimeoutException}
 import java.util.concurrent._
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
-
 import kafka.api.{KAFKA_0_9_0, KAFKA_2_2_IV0, KAFKA_2_4_IV1}
 import kafka.cluster.Broker
 import kafka.common.{GenerateBrokerIdException, InconsistentBrokerIdException, InconsistentClusterIdException}
@@ -188,6 +187,9 @@ class KafkaServer(
         brokerState.set(BrokerState.STARTING)
 
         /* setup zookeeper */
+        /**
+         * 初始化zk客户端，对一些默认的根节点进行创建，如/consumer，/brokers/ids, /brokers/topic
+         */
         initZkClient(time)
         configRepository = new ZkConfigRepository(new AdminZkClient(zkClient))
 
@@ -218,6 +220,7 @@ class KafkaServer(
             s"The broker is trying to join the wrong cluster. Configured zookeeper.connect may be wrong.")
 
         /* generate brokerId */
+        // 如果没配置id，且开启自动生成id
         config.brokerId = getOrGenerateBrokerId(preloadedBrokerMetadataCheckpoint)
         logContext = new LogContext(s"[KafkaServer id=${config.brokerId}] ")
         this.logIdent = logContext.logPrefix
@@ -244,10 +247,16 @@ class KafkaServer(
         logDirFailureChannel = new LogDirFailureChannel(config.logDirs.size)
 
         /* start log manager */
+        /**
+         * logManager初始化、启动，log日志相关
+         */
         logManager = LogManager(config, initialOfflineDirs,
           new ZkConfigRepository(new AdminZkClient(zkClient)),
           kafkaScheduler, time, brokerTopicStats, logDirFailureChannel, config.usesTopicId)
+        // 状态：RECOVERY
         brokerState.set(BrokerState.RECOVERY)
+        // 1. 先从/broker/topics 的子节点，获取所有topic名称
+        // 2. 执行启动
         logManager.startup(zkClient.getAllTopicsInCluster())
 
         metadataCache = MetadataCache.zkMetadataCache(config.brokerId)
@@ -281,6 +290,9 @@ class KafkaServer(
         //
         // Note that we allow the use of KRaft mode controller APIs when forwarding is enabled
         // so that the Envelope request is exposed. This is only used in testing currently.
+        /**
+         * server端服务启动
+         */
         socketServer = new SocketServer(config, metrics, time, credentialProvider, apiVersionManager)
         socketServer.startup(startProcessingRequests = false)
 
@@ -301,9 +313,17 @@ class KafkaServer(
         }
         alterIsrManager.start()
 
+        /**
+         * 集群副本相关
+         * 包含集群同步的fetcher线程、写入消息、ISR等
+         */
         replicaManager = createReplicaManager(isShuttingDown)
         replicaManager.startup()
 
+        /**
+         * 在zk注册broker
+         * brokerEpoch是czxid
+         */
         val brokerInfo = createBrokerInfo
         val brokerEpoch = zkClient.registerBroker(brokerInfo)
 
@@ -315,6 +335,9 @@ class KafkaServer(
         tokenManager.startup()
 
         /* start kafka controller */
+        /**
+         * controller
+         */
         kafkaController = new KafkaController(config, zkClient, time, metrics, brokerInfo, brokerEpoch, tokenManager, brokerFeatures, featureCache, threadNamePrefix)
         kafkaController.startup()
 
@@ -322,7 +345,15 @@ class KafkaServer(
 
         /* start group coordinator */
         // Hardcode Time.SYSTEM for now as some Streams tests fail otherwise, it would be good to fix the underlying issue
+        /**
+         * consumer group的groupCoordinator
+         */
         groupCoordinator = GroupCoordinator(config, replicaManager, Time.SYSTEM, metrics)
+        /**
+         * 启动过程：
+         * 1. 从zk获取名称为__consumer_offsets的topic信息、分配情况（/brokers/topics/__consumer_offsets）
+         * 2. 启动定时清理过期group
+         */
         groupCoordinator.startup(() => zkClient.getTopicPartitionCount(Topic.GROUP_METADATA_TOPIC_NAME).getOrElse(config.offsetsTopicPartitions))
 
         /* start transaction coordinator, with a separate background thread scheduler for transaction expiration and log loading */
@@ -367,18 +398,28 @@ class KafkaServer(
 
         /* start processing requests */
         val zkSupport = ZkSupport(adminManager, kafkaController, zkClient, forwardingManager, metadataCache)
+
+        /**
+         * 一般请求的请求处理逻辑KafkaApis，如client端那样叫RequestProcessor请求处理器
+         */
         dataPlaneRequestProcessor = new KafkaApis(socketServer.dataPlaneRequestChannel, zkSupport, replicaManager, groupCoordinator, transactionCoordinator,
           autoTopicCreationManager, config.brokerId, config, configRepository, metadataCache, metrics, authorizer, quotaManagers,
           fetchManager, brokerTopicStats, clusterId, time, tokenManager, apiVersionManager)
-
+        /**
+         * 一般请求Api的处理Handler线程池，也就是IO线程，负责执行RequestProcessor的逻辑
+         */
         dataPlaneRequestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.dataPlaneRequestChannel, dataPlaneRequestProcessor, time,
           config.numIoThreads, s"${SocketServer.DataPlaneMetricPrefix}RequestHandlerAvgIdlePercent", SocketServer.DataPlaneThreadPrefix)
 
+        /**
+         * controller相关请求的处理
+         */
         socketServer.controlPlaneRequestChannelOpt.foreach { controlPlaneRequestChannel =>
+          // controller相关请求的RequestProcessor
           controlPlaneRequestProcessor = new KafkaApis(controlPlaneRequestChannel, zkSupport, replicaManager, groupCoordinator, transactionCoordinator,
             autoTopicCreationManager, config.brokerId, config, configRepository, metadataCache, metrics, authorizer, quotaManagers,
             fetchManager, brokerTopicStats, clusterId, time, tokenManager, apiVersionManager)
-
+          // handler线程池，实际只有1个线程
           controlPlaneRequestHandlerPool = new KafkaRequestHandlerPool(config.brokerId, socketServer.controlPlaneRequestChannelOpt.get, controlPlaneRequestProcessor, time,
             1, s"${SocketServer.ControlPlaneMetricPrefix}RequestHandlerAvgIdlePercent", SocketServer.ControlPlaneThreadPrefix)
         }
@@ -454,6 +495,7 @@ class KafkaServer(
     }
 
     _zkClient = createZkClient(config.zkConnect, secureAclsEnabled)
+    // 确保所有根节点都创建了，如/consumer，/brokers/ids, /brokers/topic
     _zkClient.createTopLevelPaths()
   }
 
@@ -462,6 +504,7 @@ class KafkaServer(
   }
 
   def createBrokerInfo: BrokerInfo = {
+    // 就是获取listener的host:port
     val endPoints = config.advertisedListeners.map(e => s"${e.host}:${e.port}")
     zkClient.getAllBrokersInCluster.filter(_.id != config.brokerId).foreach { broker =>
       val commonEndPoints = broker.endPoints.map(e => s"${e.host}:${e.port}").intersect(endPoints)
@@ -476,6 +519,7 @@ class KafkaServer(
         endpoint
     }
 
+    //
     val updatedEndpoints = listeners.map(endpoint =>
       if (endpoint.host == null || endpoint.host.trim.isEmpty)
         endpoint.copy(host = InetAddress.getLocalHost.getCanonicalHostName)
@@ -793,9 +837,10 @@ class KafkaServer(
           s"If you intend to create a new broker, you should remove all data in your data directories (log.dirs).")
     else if (brokerMetadata.brokerId.isDefined)
       brokerMetadata.brokerId.get
-    else if (brokerId < 0 && config.brokerIdGenerationEnable) // generate a new brokerId from Zookeeper
+    else if (brokerId < 0 && config.brokerIdGenerationEnable) { // generate a new brokerId from Zookeeper
+      // 自动，主要更新一下/brokers/seqid，使用更新后的版本作为id
       generateBrokerId()
-    else
+    } else
       brokerId
   }
 

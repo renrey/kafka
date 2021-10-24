@@ -66,6 +66,9 @@ class ReplicaFetcherThread(name: String,
     s"fetcherId=$fetcherId] ")
   this.logIdent = logContext.logPrefix
 
+  /**
+   * 初始化对leader的发送client
+   */
   private val leaderEndpoint = leaderEndpointBlockingSend.getOrElse(
     new ReplicaFetcherBlockingSend(sourceBroker, brokerConfig, metrics, time, fetcherId,
       s"broker-$replicaId-fetcher-$fetcherId", logContext))
@@ -162,6 +165,7 @@ class ReplicaFetcherThread(name: String,
     val logTrace = isTraceEnabled
     val partition = replicaMgr.getPartitionOrException(topicPartition)
     val log = partition.localLogOrException
+    // 转换消息
     val records = toMemoryRecords(partitionData.records)
 
     maybeWarnIfOversizedRecords(records, topicPartition)
@@ -175,6 +179,9 @@ class ReplicaFetcherThread(name: String,
         .format(log.logEndOffset, topicPartition, records.sizeInBytes, partitionData.highWatermark))
 
     // Append the leader's messages to the log
+    /**
+     * 1.append写入消息
+     */
     val logAppendInfo = partition.appendRecordsToFollowerOrFutureReplica(records, isFuture = false)
 
     if (logTrace)
@@ -184,7 +191,14 @@ class ReplicaFetcherThread(name: String,
 
     // For the follower replica, we do not need to keep its segment base offset and physical position.
     // These values will be computed upon becoming leader or handling a preferred read replica fetch.
+    /**
+     * 2. 尝试使用leader的HW来更新follower自己的HW
+     */
     val followerHighWatermark = log.updateHighWatermark(partitionData.highWatermark)
+
+    /**
+     * 3. 尝试用leader的增大LogStartOffset
+     */
     log.maybeIncrementLogStartOffset(leaderLogStartOffset, LeaderOffsetIncremented)
     if (logTrace)
       trace(s"Follower set replica high watermark for partition $topicPartition to $followerHighWatermark")
@@ -214,6 +228,7 @@ class ReplicaFetcherThread(name: String,
 
   override protected def fetchFromLeader(fetchRequest: FetchRequest.Builder): Map[TopicPartition, FetchData] = {
     try {
+      // 向leader发送请求，等待响应返回
       val clientResponse = leaderEndpoint.sendRequest(fetchRequest)
       val fetchResponse = clientResponse.responseBody.asInstanceOf[FetchResponse[Records]]
       if (!fetchSessionHandler.handleResponse(fetchResponse)) {
@@ -266,8 +281,10 @@ class ReplicaFetcherThread(name: String,
     val partitionsWithError = mutable.Set[TopicPartition]()
 
     val builder = fetchSessionHandler.newBuilder(partitionMap.size, false)
+    // 遍历所有分区
     partitionMap.forKeyValue { (topicPartition, fetchState) =>
       // We will not include a replica in the fetch request if it should be throttled.
+      // Fetching就可以同步
       if (fetchState.isReadyForFetch && !shouldFollowerThrottle(quota, fetchState, topicPartition)) {
         try {
           val logStartOffset = this.logStartOffset(topicPartition)
@@ -275,6 +292,13 @@ class ReplicaFetcherThread(name: String,
             fetchState.lastFetchedEpoch.map(_.asInstanceOf[Integer]).asJava
           else
             Optional.empty[Integer]
+
+          /**
+           * 加入对应分区的FetchRequest请求
+           * fetchOffset：本次fetch的起始offset，一般是本地的LEO，如果刚执行完截取，就是截取offset（其实也是LEO）
+           * maxBytes: 本次fetch最大大小，replica.fetch.max.bytes
+           * currentLeaderEpoch： 当前epoch，就是校验是否最新的epoch请求
+            */
           builder.add(topicPartition, new FetchRequest.PartitionData(
             fetchState.fetchOffset,
             logStartOffset,
@@ -337,6 +361,7 @@ class ReplicaFetcherThread(name: String,
       return Map.empty
     }
 
+    // 放入每个分区的获取信息
     val topics = new OffsetForLeaderTopicCollection(partitions.size)
     partitions.forKeyValue { (topicPartition, epochData) =>
       var topic = topics.find(topicPartition.topic)
@@ -347,14 +372,23 @@ class ReplicaFetcherThread(name: String,
       topic.partitions.add(epochData)
     }
 
+    /**
+     * 生成请求对象
+     * 参数有api的版本号、本broker的id
+     */
     val epochRequest = OffsetsForLeaderEpochRequest.Builder.forFollower(
       offsetForLeaderEpochRequestVersion, topics, brokerConfig.brokerId)
     debug(s"Sending offset for leader epoch request $epochRequest")
 
     try {
+      /**
+       * 发送请求
+       */
       val response = leaderEndpoint.sendRequest(epochRequest)
       val responseBody = response.responseBody.asInstanceOf[OffsetsForLeaderEpochResponse]
       debug(s"Received leaderEpoch response $response")
+      // 解析响应
+      // key-分区 value-EpochEndOffset
       responseBody.data.topics.asScala.flatMap { offsetForLeaderTopicResult =>
         offsetForLeaderTopicResult.partitions.asScala.map { offsetForLeaderPartitionResult =>
           val tp = new TopicPartition(offsetForLeaderTopicResult.topic, offsetForLeaderPartitionResult.partition)

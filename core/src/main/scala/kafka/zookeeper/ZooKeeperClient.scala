@@ -198,6 +198,8 @@ class ZooKeeperClient(connectString: String,
 
     // Cast to AsyncRequest to workaround a scalac bug that results in an false exhaustiveness warning
     // with -Xlint:strict-unsealed-patmat
+    // watcher的回调都是通过默认Watcher进行的
+    // 每个get请求等添加watcher的请求，才会新增watcher
     (request: AsyncRequest) match {
       case ExistsRequest(path, ctx) =>
         zooKeeper.exists(path, shouldWatch(request), new StatCallback {
@@ -286,6 +288,9 @@ class ZooKeeperClient(connectString: String,
   // If this method is changed, the documentation for registerZNodeChangeHandler and/or registerZNodeChildChangeHandler
   // may need to be updated.
   private def shouldWatch(request: AsyncRequest): Boolean = request match {
+    /**
+     * 除了GetChildrenRequest需要registerWatch，其他的只要往XXXChangeHandlers注册，就会有watcher
+     */
     case GetChildrenRequest(_, registerWatch, _) => registerWatch && zNodeChildChangeHandlers.contains(request.path)
     case _: ExistsRequest | _: GetDataRequest => zNodeChangeHandlers.contains(request.path)
     case _ => throw new IllegalArgumentException(s"Request $request is not watchable")
@@ -439,11 +444,13 @@ class ZooKeeperClient(connectString: String,
   private def threadPrefix: String = name.map(n => n.replaceAll("\\s", "") + "-").getOrElse("")
 
   // package level visibility for testing only
+  // 默认watcher
   private[zookeeper] object ZooKeeperClientWatcher extends Watcher {
     override def process(event: WatchedEvent): Unit = {
       debug(s"Received event: $event")
       Option(event.getPath) match {
         case None =>
+          // 连接事件错误
           val state = event.getState
           stateToMeterMap.get(state).foreach(_.mark())
           inLock(isConnectedOrExpiredLock) {
@@ -463,6 +470,7 @@ class ZooKeeperClient(connectString: String,
             scheduleReinitialize("session-expired", "Session expired.", delayMs = 0L)
           }
         case Some(path) =>
+          // 调用回调函数
           (event.getType: @unchecked) match {
             case EventType.NodeChildrenChanged => zNodeChildChangeHandlers.get(path).foreach(_.handleChildChange())
             case EventType.NodeCreated => zNodeChangeHandlers.get(path).foreach(_.handleCreation())

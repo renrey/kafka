@@ -477,7 +477,9 @@ public final class LegacyRecord {
             out.writeInt(-1);
         } else {
             int size = key.remaining();
+            //key size
             out.writeInt(size);
+            // key值
             Utils.writeTo(out, key, size);
         }
         // write the value
@@ -485,7 +487,9 @@ public final class LegacyRecord {
             out.writeInt(-1);
         } else {
             int size = value.remaining();
+            // value size
             out.writeInt(size);
+            // value值
             Utils.writeTo(out, value, size);
         }
     }

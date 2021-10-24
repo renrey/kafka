@@ -40,6 +40,7 @@ private[group] class DelayedJoin(coordinator: GroupCoordinator,
     // try to complete delayed actions introduced by coordinator.onCompleteJoin
     tryToCompleteDelayedAction()
   }
+  // 完成join
   override def onComplete(): Unit = coordinator.onCompleteJoin(group)
 
   // TODO: remove this ugly chain after we move the action queue to handler thread
@@ -53,6 +54,8 @@ private[group] class DelayedJoin(coordinator: GroupCoordinator,
   * When onComplete is triggered we check if any new members have been added and if there is still time remaining
   * before the rebalance timeout. If both are true we then schedule a further delay. Otherwise we complete the
   * rebalance.
+ *
+ * 初始的跟平常的最大不同是，会在指定范围内（6s）一直接收join请求，直到时间结束才去完成，而普通只要在范围有join请求，就会去完成
   */
 private[group] class InitialDelayedJoin(coordinator: GroupCoordinator,
                                         purgatory: DelayedOperationPurgatory[DelayedJoin],
@@ -65,10 +68,17 @@ private[group] class InitialDelayedJoin(coordinator: GroupCoordinator,
 
   override def onComplete(): Unit = {
     group.inLock {
+      /**
+       * 就是这个第一次PreparingRebalance到期前，有其他consumer发送join
+       * remainingMs: 组内最大rebalanceTimeoutMs - broker上的groupInitialRebalanceDelayMs(group.min.session.timeout.ms，默认6s)
+       */
       if (group.newMemberAdded && remainingMs != 0) {
         group.newMemberAdded = false
         val delay = min(configuredRebalanceDelay, remainingMs)
         val remaining = max(remainingMs - delayMs, 0)
+        /**
+         * 其实就继续延时等待其他consumer发送join，一直这样循环，直到过去真实需要等待的时间（configuredRebalanceDelay, 6s）
+         */
         purgatory.tryCompleteElseWatch(new InitialDelayedJoin(coordinator,
           purgatory,
           group,
@@ -76,6 +86,7 @@ private[group] class InitialDelayedJoin(coordinator: GroupCoordinator,
           delay,
           remaining
         ), Seq(GroupKey(group.groupId)))
+      // 已经到期了（已达到6s），直接完成
       } else
         super.onComplete()
     }

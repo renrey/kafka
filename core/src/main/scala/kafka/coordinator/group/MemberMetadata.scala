@@ -68,6 +68,7 @@ private[group] class MemberMetadata(var memberId: String,
   var isLeaving: Boolean = false
   var isNew: Boolean = false
 
+  // 有无指定groupId
   def isStaticMember: Boolean = groupInstanceId.isDefined
 
   // This variable is used to track heartbeat completion through the delayed

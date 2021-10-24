@@ -69,11 +69,13 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
     inLock(lock) {
       _entries match {
         case 0 => OffsetPosition(baseOffset, 0)
+        // 有entry，转换最后一个entry的offset和物理位置
         case s => parseEntry(mmap, s - 1)
       }
     }
   }
 
+  // 最后一个offset索引entry的offset
   def lastOffset: Long = _lastOffset
 
   /**
@@ -88,11 +90,15 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
   def lookup(targetOffset: Long): OffsetPosition = {
     maybeLock(lock) {
       val idx = mmap.duplicate
+      // 获取targetOffset所在的offset范围的开始
+      // 就是小于targetOffset，且在offset索引中的最大一个（距离最近的）
       val slot = largestLowerBoundSlotFor(idx, targetOffset, IndexSearchType.KEY)
       if(slot == -1)
         OffsetPosition(baseOffset, 0)
-      else
+      else {
+        // 把开始的entry(相对值)转换成准确offset、log物理位置
         parseEntry(idx, slot)
+      }
     }
   }
 
@@ -112,10 +118,13 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
     }
   }
 
+  // 距离baseOffset的距离，从relativeOffset在index的位置获取
   private def relativeOffset(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize)
 
+  // 在log中距离开头的距离值，从物理位置的在index的位置获取
   private def physical(buffer: ByteBuffer, n: Int): Int = buffer.getInt(n * entrySize + 4)
 
+  // n是在index中第几个entry
   override protected def parseEntry(buffer: ByteBuffer, n: Int): OffsetPosition = {
     OffsetPosition(baseOffset + relativeOffset(buffer, n), physical(buffer, n))
   }
@@ -143,7 +152,9 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
       require(!isFull, "Attempt to append to a full index (size = " + _entries + ").")
       if (_entries == 0 || offset > _lastOffset) {
         trace(s"Adding index entry $offset => $position to ${file.getAbsolutePath}")
+        // 插入相对路径，就是与baseOffset的差距
         mmap.putInt(relativeOffset(offset))
+        // 插入物理位置
         mmap.putInt(position)
         _entries += 1
         _lastOffset = offset
@@ -160,6 +171,7 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
   override def truncateTo(offset: Long): Unit = {
     inLock(lock) {
       val idx = mmap.duplicate
+      // 1. 使用二分查找，寻找小于等于offset的最大那个（自己or自己所在范围开头），这里是相对值
       val slot = largestLowerBoundSlotFor(idx, offset, IndexSearchType.KEY)
 
       /* There are 3 cases for choosing the new size
@@ -167,13 +179,22 @@ class OffsetIndex(_file: File, baseOffset: Long, maxIndexSize: Int = -1, writabl
        * 2) if there is an entry for this exact offset, delete it and everything larger than it
        * 3) if there is no entry for this offset, delete everything larger than the next smallest
        */
+      /**
+       * 2. 得出index索引需要截取到的entry
+       */
       val newEntries =
         if(slot < 0)
           0
+        // slot实际offset就是offset，就使用这个entry
         else if(relativeOffset(idx, slot) == offset - baseOffset)
           slot
+        // slot在offset前面，直接使用后一个的index entry（因为原来的entry包含不用删除的）
         else
           slot + 1
+
+      /**
+       * 3. 截取到上一步得出的
+        */
       truncateToEntries(newEntries)
     }
   }

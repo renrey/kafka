@@ -686,7 +686,10 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             }
 
             this.log = logContext.logger(getClass());
-            boolean enableAutoCommit = config.maybeOverrideEnableAutoCommit();
+			/**
+			 * 自动提交offset
+			 */
+			boolean enableAutoCommit = config.maybeOverrideEnableAutoCommit();
             groupId.ifPresent(groupIdStr -> {
                 if (groupIdStr.isEmpty()) {
                     log.warn("Support for using the empty group id by consumers is deprecated and will be removed in the next major release.");
@@ -704,6 +707,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     ConsumerConfig.INTERCEPTOR_CLASSES_CONFIG,
                     ConsumerInterceptor.class,
                     Collections.singletonMap(ConsumerConfig.CLIENT_ID_CONFIG, clientId));
+            // 自定义拦截器
             this.interceptors = new ConsumerInterceptors<>(interceptorList);
             if (keyDeserializer == null) {
                 this.keyDeserializer = config.getConfiguredInstance(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, Deserializer.class);
@@ -719,21 +723,32 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 config.ignore(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG);
                 this.valueDeserializer = valueDeserializer;
             }
-            OffsetResetStrategy offsetResetStrategy = OffsetResetStrategy.valueOf(config.getString(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG).toUpperCase(Locale.ROOT));
-            this.subscriptions = new SubscriptionState(logContext, offsetResetStrategy);
+			/**
+			 * 起始offset策略，默认latest
+			 */
+			OffsetResetStrategy offsetResetStrategy = OffsetResetStrategy.valueOf(config.getString(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG).toUpperCase(Locale.ROOT));
+			/**
+			 * 订阅状态topic
+			 */
+			this.subscriptions = new SubscriptionState(logContext, offsetResetStrategy);
             ClusterResourceListeners clusterResourceListeners = configureClusterResourceListeners(keyDeserializer,
                     valueDeserializer, metrics.reporters(), interceptorList);
-            this.metadata = new ConsumerMetadata(retryBackoffMs,
+			/**
+			 * 元数据
+			 */
+			this.metadata = new ConsumerMetadata(retryBackoffMs,
                     config.getLong(ConsumerConfig.METADATA_MAX_AGE_CONFIG),
                     !config.getBoolean(ConsumerConfig.EXCLUDE_INTERNAL_TOPICS_CONFIG),
                     config.getBoolean(ConsumerConfig.ALLOW_AUTO_CREATE_TOPICS_CONFIG),
                     subscriptions, logContext, clusterResourceListeners);
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(
                     config.getList(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG), config.getString(ConsumerConfig.CLIENT_DNS_LOOKUP_CONFIG));
+            // 启动，保存地址
             this.metadata.bootstrap(addresses);
             String metricGrpPrefix = "consumer";
 
             FetcherMetricsRegistry metricsRegistry = new FetcherMetricsRegistry(Collections.singleton(CLIENT_ID_METRIC_TAG), metricGrpPrefix);
+            // 连接channel 的builder
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config, time, logContext);
             IsolationLevel isolationLevel = IsolationLevel.valueOf(
                     config.getString(ConsumerConfig.ISOLATION_LEVEL_CONFIG).toUpperCase(Locale.ROOT));
@@ -741,7 +756,12 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             int heartbeatIntervalMs = config.getInt(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG);
 
             ApiVersions apiVersions = new ApiVersions();
-            NetworkClient netClient = new NetworkClient(
+			/**
+			 *
+			 * ConsumerNetworkClient:consumer网络通信的client
+			 * 基于NetworkClient封装
+			 */
+			NetworkClient netClient = new NetworkClient(
                     new Selector(config.getLong(ConsumerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), metrics, time, metricGrpPrefix, channelBuilder, logContext),
                     this.metadata,
                     clientId,
@@ -768,10 +788,16 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     config.getInt(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG),
                     heartbeatIntervalMs); //Will avoid blocking an extended period of time to prevent heartbeat thread starvation
 
+			/**
+			 * 分配器assingor
+			 */
             this.assignors = getAssignorInstances(config.getList(ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG),
                     config.originals(Collections.singletonMap(ConsumerConfig.CLIENT_ID_CONFIG, clientId)));
-
-            // no coordinator will be constructed for the default (null) group id
+			/**
+			 * consumerGroup的coordinator
+			 * --- 有配置group.id才有
+			 */
+			// no coordinator will be constructed for the default (null) group id
             this.coordinator = !groupId.isPresent() ? null :
                 new ConsumerCoordinator(groupRebalanceConfig,
                         logContext,
@@ -786,7 +812,10 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                         config.getInt(ConsumerConfig.AUTO_COMMIT_INTERVAL_MS_CONFIG),
                         this.interceptors,
                         config.getBoolean(ConsumerConfig.THROW_ON_FETCH_STABLE_OFFSET_UNSUPPORTED));
-            this.fetcher = new Fetcher<>(
+			/**
+			 * fetcher:拉取消息线程
+			 */
+			this.fetcher = new Fetcher<>(
                     logContext,
                     this.client,
                     config.getInt(ConsumerConfig.FETCH_MIN_BYTES_CONFIG),
@@ -952,7 +981,10 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             if (topics == null)
                 throw new IllegalArgumentException("Topic collection to subscribe to cannot be null");
             if (topics.isEmpty()) {
-                // treat subscribing to empty topic list as the same as unsubscribing
+				/**
+				 * 传入空topic，等于停止订阅
+				 */
+				// treat subscribing to empty topic list as the same as unsubscribing
                 this.unsubscribe();
             } else {
                 for (String topic : topics) {
@@ -961,9 +993,15 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 }
 
                 throwIfNoAssignorsConfigured();
+                // 清掉指定topic中原来在本地就有的topic的数据
                 fetcher.clearBufferedDataForUnassignedTopics(topics);
                 log.info("Subscribed to topic(s): {}", Utils.join(topics, ", "));
-                if (this.subscriptions.subscribe(new HashSet<>(topics), listener))
+				/**
+				 * 1. subscriptions中订阅（注册）这些topic
+				 * 2. 更新metadata需要更新标志（NetWorkClient执行更新）
+				 */
+				if (this.subscriptions.subscribe(new HashSet<>(topics), listener))
+					// 更新为增量更新
                     metadata.requestUpdateForNewTopics();
             }
         } finally {
@@ -1027,8 +1065,11 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         try {
             throwIfNoAssignorsConfigured();
             log.info("Subscribed to pattern: '{}'", pattern);
+            // 1. 把pattern注册到subscriptions
             this.subscriptions.subscribe(pattern, listener);
+            // 2. subscriptions中订阅本地缓存topic符合pattern的
             this.coordinator.updatePatternSubscription(metadata.fetch());
+            // 3. 提交更新元数据
             this.metadata.requestUpdateForNewTopics();
         } finally {
             release();
@@ -1162,6 +1203,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     @Deprecated
     @Override
     public ConsumerRecords<K, V> poll(final long timeoutMs) {
+    	// timeout实际被转换成对应时间的timer
         return poll(time.timer(timeoutMs), false);
     }
 
@@ -1218,6 +1260,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         try {
             this.kafkaConsumerMetrics.recordPollStart(timer.currentTimeMs());
 
+            // 没有设置订阅，启动失败
             if (this.subscriptions.hasNoSubscriptionOrUserAssignment()) {
                 throw new IllegalStateException("Consumer is not subscribed to any topics or assigned any partitions");
             }
@@ -1228,13 +1271,25 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                 if (includeMetadataInTimeout) {
                     // try to update assignment metadata BUT do not need to block on the timer for join group
                     updateAssignmentMetadataIfNeeded(timer, false);
+                // 默认false
                 } else {
-                    while (!updateAssignmentMetadataIfNeeded(time.timer(Long.MAX_VALUE), true)) {
+					/**
+					 * group消费前置操作：
+					 * 1. joinGroup(FindCoordinator、JoinGroup)
+					 * 2. 分区消费分配（syncGroup）
+					 * 3. 初始化fetch位置（ListOffset）
+					 * waitForJoinGroup=true
+					 */
+					while (!updateAssignmentMetadataIfNeeded(time.timer(Long.MAX_VALUE), true)) {
                         log.warn("Still waiting for metadata");
                     }
                 }
 
-                final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollForFetches(timer);
+				/**
+				 * 1. 异步提交FetchRequest请求
+				 * 2. 处理已完成的FetchRequest，从中解析获取消息，最多500条，就是这里返回的records
+				 */
+				final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollForFetches(timer);
                 if (!records.isEmpty()) {
                     // before returning the fetched records, we can send off the next round of fetches
                     // and avoid block waiting for their responses to enable pipelining while the user
@@ -1245,8 +1300,12 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
                     if (fetcher.sendFetches() > 0 || client.hasPendingRequests()) {
                         client.transmitSends();
                     }
-
-                    return this.interceptors.onConsume(new ConsumerRecords<>(records));
+					/**
+					 * onConsume:
+					 * 1. 调用所有拦截器
+					 * 2. 返回这次的消息
+					 */
+					return this.interceptors.onConsume(new ConsumerRecords<>(records));
                 }
             } while (timer.notExpired());
 
@@ -1258,10 +1317,19 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
     }
 
     boolean updateAssignmentMetadataIfNeeded(final Timer timer, final boolean waitForJoinGroup) {
-        if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
+		/**
+		 * 初始未有coordinator信息时，这里会进行joinGroup、分区分配的操作
+		 */
+		if (coordinator != null && !coordinator.poll(timer, waitForJoinGroup)) {
             return false;
         }
 
+		/**
+		 * 初始化分配到分区开始fetch的位置
+		 * --分为group已有消费、未有两种情况
+		 *    已有消费：从coordinator获取，就是上次消费的位置
+		 *    未有：根据策略获取对应位置的offset，默认latest，一般是HW
+		 */
         return updateFetchPositions(timer);
     }
 
@@ -1269,16 +1337,26 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      * @throws KafkaException if the rebalance callback throws exception
      */
     private Map<TopicPartition, List<ConsumerRecord<K, V>>> pollForFetches(Timer timer) {
-        long pollTimeout = coordinator == null ? timer.remainingMs() :
+		/**
+		 * 离进行下次poll需要等待的时间：
+		 * 下个定时任务执行、coordinator下次poll（心跳、自动提交）的最近时间点
+		 */
+		long pollTimeout = coordinator == null ? timer.remainingMs() :
                 Math.min(coordinator.timeToNextPoll(timer.currentTimeMs()), timer.remainingMs());
 
         // if data is available already, return it immediately
+		/**
+		 * 如果已经有接收到消息，直接返回当前已完成请求的返回的消息（上限500条）
+		 */
         final Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
         if (!records.isEmpty()) {
             return records;
         }
 
         // send any new fetches (won't resend pending fetches)
+		/**
+		 * 发送fetch请求
+		 */
         fetcher.sendFetches();
 
         // We do not want to be stuck blocking in poll if we are missing some positions
@@ -1293,14 +1371,19 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         log.trace("Polling for fetches with timeout {}", pollTimeout);
 
         Timer pollTimer = time.timer(pollTimeout);
+        // poll
         client.poll(pollTimer, () -> {
             // since a fetch might be completed by the background thread, we need this poll condition
             // to ensure that we do not block unnecessarily in poll()
+			// 当前没有可进行fetch请求的分区（非pause、position是FETCHING），会一直堵塞
             return !fetcher.hasAvailableFetches();
         });
         timer.update(pollTimer.currentTimeMs());
 
-        return fetcher.fetchedRecords();
+		/**
+		 * 返回当前已完成请求的返回的消息（上限500条）
+		 */
+		return fetcher.fetchedRecords();
     }
 
     /**
@@ -2397,8 +2480,12 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
      */
     private boolean updateFetchPositions(final Timer timer) {
         // If any partitions have been truncated due to a leader change, we need to validate the offsets
+		/**
+		 * 校验当前已有的offset（第二次进入执行，因为下面把fetch offset设置才会变成待校验）
+		 */
         fetcher.validateOffsetsIfNeeded();
 
+		// 校验是否分配的全部分区都有position（初始肯定没有）
         cachedSubscriptionHashAllFetchPositions = subscriptions.hasAllFetchPositions();
         if (cachedSubscriptionHashAllFetchPositions) return true;
 
@@ -2407,15 +2494,26 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         // coordinator lookup if there are partitions which have missing positions, so
         // a consumer with manually assigned partitions can avoid a coordinator dependence
         // by always ensuring that assigned partitions have an initial position.
+		/**
+		 * 获取分区当前的committed offset
+		 */
         if (coordinator != null && !coordinator.refreshCommittedOffsetsIfNeeded(timer)) return false;
 
         // If there are partitions still needing a position and a reset policy is defined,
         // request reset using the default policy. If no reset strategy is defined and there
         // are partitions with a missing position, then we will raise an exception.
+		/**
+		 * 主要对没committed offset的分区进行初始化策略，如果没获取到，就使用的默认OffsetResetStrategy的方式，状态->AWAIT_RESET
+		 * 但如果没有设置OffsetResetStrategy的话，会直接报错
+		 */
         subscriptions.resetInitializingPositions();
 
         // Finally send an asynchronous request to lookup and update the positions of any
         // partitions which are awaiting reset.
+		/**
+		 * 对上面这些AWAIT_RESET的分区初始化fetch offset操作，主要进行对这些分区的leader发送ListOffset获取对应策略位置的offset，更新到本地缓存
+		 * 默认是latest，从HW开始
+		 */
         fetcher.resetOffsetsIfNeeded();
 
         return true;

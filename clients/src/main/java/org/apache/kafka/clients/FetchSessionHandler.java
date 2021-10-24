@@ -59,6 +59,7 @@ public class FetchSessionHandler {
 
     /**
      * The metadata for the next fetch request.
+     * 初始就是INITIAL
      */
     private FetchMetadata nextMetadata = FetchMetadata.INITIAL;
 
@@ -399,16 +400,24 @@ public class FetchSessionHandler {
      *                  because of missing or unexpected partitions.
      */
     public boolean handleResponse(FetchResponse<?> response) {
+        // 异常
         if (response.error() != Errors.NONE) {
             log.info("Node {} was unable to process the fetch request with {}: {}.",
                 node, nextMetadata, response.error());
+            // sessionId无效，直接需要重新创建
             if (response.error() == Errors.FETCH_SESSION_ID_NOT_FOUND) {
+                // sessionId，直接INITIAL, 需要重新创建session
                 nextMetadata = FetchMetadata.INITIAL;
             } else {
+                // sessionId，可以复用，epoch重置
                 nextMetadata = nextMetadata.nextCloseExisting();
             }
             return false;
         }
+        /**
+         * 这次请求是全量操作（初始-需要新建 session、非法）
+         * 就是注册的意思
+         */
         if (nextMetadata.isFull()) {
             if (response.responseData().isEmpty() && response.throttleTimeMs() > 0) {
                 // Normally, an empty full fetch response would be invalid.  However, KIP-219
@@ -429,6 +438,7 @@ public class FetchSessionHandler {
                 log.info("Node {} sent an invalid full fetch response with {}", node, problem);
                 nextMetadata = FetchMetadata.INITIAL;
                 return false;
+                // sessionId无效，直接需要重新创建
             } else if (response.sessionId() == INVALID_SESSION_ID) {
                 if (log.isDebugEnabled())
                     log.debug("Node {} sent a full fetch response{}", node, responseDataToLogString(response));
@@ -439,6 +449,11 @@ public class FetchSessionHandler {
                 if (log.isDebugEnabled())
                     log.debug("Node {} sent a full fetch response that created a new incremental " +
                             "fetch session {}{}", node, response.sessionId(), responseDataToLogString(response));
+                /**
+                 * 使用响应返回的sessionId初始化 fetch session
+                 * sessionId：sessionId
+                 * fetch session epoch= 1
+                 */
                 nextMetadata = FetchMetadata.newIncremental(response.sessionId());
                 return true;
             }
@@ -463,6 +478,10 @@ public class FetchSessionHandler {
                     log.debug("Node {} sent an incremental fetch response with throttleTimeMs = {} " +
                         "for session {}{}", node, response.throttleTimeMs(), response.sessionId(),
                         responseDataToLogString(response));
+                /**
+                 * 增量请求，就是已有的session续约
+                 * fetch session epoch+1
+                 */
                 nextMetadata = nextMetadata.nextIncremental();
                 return true;
             }

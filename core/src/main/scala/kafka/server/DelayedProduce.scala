@@ -85,13 +85,17 @@ class DelayedProduce(delayMs: Long,
     produceMetadata.produceStatus.forKeyValue { (topicPartition, status) =>
       trace(s"Checking produce satisfaction for $topicPartition, current status $status")
       // skip those partitions that have already been satisfied
+      // 判断分区的ack状态，是否正在等待ack
       if (status.acksPending) {
+        // 首先判断broker的分区是否上线
         val (hasEnough, error) = replicaManager.getPartitionOrError(topicPartition) match {
+          // 不是，异常
           case Left(err) =>
             // Case A
             (false, err)
-
+          //
           case Right(partition) =>
+            // ack校验
             partition.checkEnoughReplicasReachOffset(status.requiredOffset)
         }
 
@@ -110,6 +114,7 @@ class DelayedProduce(delayMs: Long,
       false
   }
 
+  // 完成过期执行任务后，记录
   override def onExpiration(): Unit = {
     produceMetadata.produceStatus.forKeyValue { (topicPartition, status) =>
       if (status.acksPending) {
@@ -121,6 +126,7 @@ class DelayedProduce(delayMs: Long,
 
   /**
    * Upon completion, return the current response status along with the error code per partition
+   * 过期后调用
    */
   override def onComplete(): Unit = {
     val responseStatus = produceMetadata.produceStatus.map { case (k, status) => k -> status.responseStatus }

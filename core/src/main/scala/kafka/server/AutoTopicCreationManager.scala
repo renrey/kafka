@@ -221,8 +221,8 @@ class DefaultAutoTopicCreationManager(
       case GROUP_METADATA_TOPIC_NAME =>
         new CreatableTopic()
           .setName(topic)
-          .setNumPartitions(config.offsetsTopicPartitions)
-          .setReplicationFactor(config.offsetsTopicReplicationFactor)
+          .setNumPartitions(config.offsetsTopicPartitions) // 默认50个分区
+          .setReplicationFactor(config.offsetsTopicReplicationFactor) // 2个副本
           .setConfigs(convertToTopicConfigCollections(groupCoordinator.offsetsTopicConfigs))
       case TRANSACTION_STATE_TOPIC_NAME =>
         new CreatableTopic()

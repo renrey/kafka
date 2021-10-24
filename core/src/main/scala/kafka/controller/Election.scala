@@ -29,14 +29,23 @@ object Election {
                                leaderAndIsrOpt: Option[LeaderAndIsr],
                                uncleanLeaderElectionEnabled: Boolean,
                                controllerContext: ControllerContext): ElectionResult = {
-
+    // 原来分配策略
     val assignment = controllerContext.partitionReplicaAssignment(partition)
+    // 获取当前分区的上线broker
     val liveReplicas = assignment.filter(replica => controllerContext.isReplicaOnline(replica, partition))
     leaderAndIsrOpt match {
       case Some(leaderAndIsr) =>
         val isr = leaderAndIsr.isr
+        /**
+         * 1. 寻找第一个上线的且在ISR的brokerId，作为新的leader
+         * --- 下线后重新选举：上线状态、并且在上一次ISR中的第一个broker
+         */
         val leaderOpt = PartitionLeaderElectionAlgorithms.offlinePartitionLeaderElection(
           assignment, isr, liveReplicas.toSet, uncleanLeaderElectionEnabled, controllerContext)
+        /**
+         * 2.选举到新leader的分区更新ISR，原有ISR上排除下线状态的
+         * 而没选到的，ISR更新为空
+         */
         val newLeaderAndIsrOpt = leaderOpt.map { leader =>
           val newIsr = if (isr.contains(leader)) isr.filter(replica => controllerContext.isReplicaOnline(replica, partition))
           else List(leader)
@@ -65,6 +74,10 @@ object Election {
   ): Seq[ElectionResult] = {
     partitionsWithUncleanLeaderElectionState.map {
       case (partition, leaderAndIsrOpt, uncleanLeaderElectionEnabled) =>
+        /**
+         * 执行分区下线后选举leader
+         */
+        // uncleanLeaderElectionEnabled:false
         leaderForOffline(partition, leaderAndIsrOpt, uncleanLeaderElectionEnabled, controllerContext)
     }
   }

@@ -172,9 +172,14 @@ class GroupMetadataManager(brokerId: Int,
     })
 
   def startup(retrieveGroupMetadataTopicPartitionCount: () => Int, enableMetadataExpiration: Boolean): Unit = {
+    // 1. 从zk获取名称为__consumer_offsets的topic信息、分配情况（/brokers/topics/__consumer_offsets）
     groupMetadataTopicPartitionCount = retrieveGroupMetadataTopicPartitionCount()
+    // 启动定时线程
     scheduler.startup()
     if (enableMetadataExpiration) {
+      /**
+       * 定时清除过期group
+       */
       scheduler.schedule(name = "delete-expired-group-metadata",
         fun = () => cleanupGroupMetadata(),
         period = config.offsetsRetentionCheckIntervalMs,
@@ -188,6 +193,7 @@ class GroupMetadataManager(brokerId: Int,
 
   def isPartitionLoading(partition: Int) = inLock(partitionLock) { loadingPartitions.contains(partition) }
 
+  // groupId的Hash % topic分区数（默认50个）
   def partitionFor(groupId: String): Int = Utils.abs(groupId.hashCode) % groupMetadataTopicPartitionCount
 
   def isGroupLocal(groupId: String): Boolean = isPartitionOwned(partitionFor(groupId))
@@ -223,6 +229,7 @@ class GroupMetadataManager(brokerId: Int,
    * is true - or null if not found
    */
   def getOrMaybeCreateGroup(groupId: String, createIfNotExist: Boolean): Option[GroupMetadata] = {
+    // 没有group时，往groupMetadataCache创建这个group
     if (createIfNotExist)
       Option(groupMetadataCache.getAndMaybePut(groupId, new GroupMetadata(groupId, Empty, time)))
     else
@@ -249,22 +256,31 @@ class GroupMetadataManager(brokerId: Int,
         // We always use CREATE_TIME, like the producer. The conversion to LOG_APPEND_TIME (if necessary) happens automatically.
         val timestampType = TimestampType.CREATE_TIME
         val timestamp = time.milliseconds()
+        // key：groupId
         val key = GroupMetadataManager.groupMetadataKey(group.groupId)
+        // value：元数据、分配
         val value = GroupMetadataManager.groupMetadataValue(group, groupAssignment, interBrokerProtocolVersion)
 
+        /**
+         * 1. 生成group内容（元数据、分配）的Record，用于写入内置topic（__consumer__offset）
+         */
         val records = {
+          // 分配ByteBuffer空间
           val buffer = ByteBuffer.allocate(AbstractRecords.estimateSizeInBytes(magicValue, compressionType,
             Seq(new SimpleRecord(timestamp, key, value)).asJava))
           val builder = MemoryRecords.builder(buffer, magicValue, compressionType, timestampType, 0L)
+          // 插入时间、key、value
           builder.append(timestamp, key, value)
           builder.build()
         }
 
+        // __consumer__offset中本group存储的分区
         val groupMetadataPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, partitionFor(group.groupId))
         val groupMetadataRecords = Map(groupMetadataPartition -> records)
         val generationId = group.generationId
 
         // set the callback function to insert the created group into cache after log append completed
+        // 3. 发送响应消息的回调
         def putCacheCallback(responseStatus: Map[TopicPartition, PartitionResponse]): Unit = {
           // the append response should only contain the topics partition
           if (responseStatus.size != 1 || !responseStatus.contains(groupMetadataPartition))
@@ -313,6 +329,10 @@ class GroupMetadataManager(brokerId: Int,
 
           responseCallback(responseError)
         }
+
+        /**
+         * 2. 把record写入到对应的分区log
+         */
         appendForGroup(group, groupMetadataRecords, putCacheCallback)
 
       case None =>
@@ -325,6 +345,7 @@ class GroupMetadataManager(brokerId: Int,
                              records: Map[TopicPartition, MemoryRecords],
                              callback: Map[TopicPartition, PartitionResponse] => Unit): Unit = {
     // call replica manager to append the group message
+    // 写入日志
     replicaManager.appendRecords(
       timeout = config.offsetCommitTimeoutMs.toLong,
       requiredAcks = config.offsetCommitRequiredAcks,
@@ -358,6 +379,7 @@ class GroupMetadataManager(brokerId: Int,
 
     val isTxnOffsetCommit = producerId != RecordBatch.NO_PRODUCER_ID
     // construct the message set to append
+    // 长度过大
     if (filteredOffsetMetadata.isEmpty) {
       // compute the final error codes for the commit response
       val commitStatus = offsetMetadata.map { case (k, _) => k -> Errors.OFFSET_METADATA_TOO_LARGE }
@@ -369,11 +391,16 @@ class GroupMetadataManager(brokerId: Int,
           val timestampType = TimestampType.CREATE_TIME
           val timestamp = time.milliseconds()
 
+          // 遍历提交过来的每个分区的offsetAndMetadata
+          // 每个封装一个SimpleRecord
           val records = filteredOffsetMetadata.map { case (topicPartition, offsetAndMetadata) =>
             val key = GroupMetadataManager.offsetCommitKey(group.groupId, topicPartition)
             val value = GroupMetadataManager.offsetCommitValue(offsetAndMetadata, interBrokerProtocolVersion)
             new SimpleRecord(timestamp, key, value)
           }
+          /**
+           * 1.获取当前group的对应的分区（在__consumer_offsets）
+           */
           val offsetTopicPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, partitionFor(group.groupId))
           val buffer = ByteBuffer.allocate(AbstractRecords.estimateSizeInBytes(magicValue, compressionType, records.asJava))
 
@@ -383,10 +410,19 @@ class GroupMetadataManager(brokerId: Int,
           val builder = MemoryRecords.builder(buffer, magicValue, compressionType, timestampType, 0L, time.milliseconds(),
             producerId, producerEpoch, 0, isTxnOffsetCommit, RecordBatch.NO_PARTITION_LEADER_EPOCH)
 
+          /**
+           * 每个SimpleRecord都写入一个MemoryRecords（batch）
+           */
           records.foreach(builder.append)
+          // 生成一个entry-map：
           val entries = Map(offsetTopicPartition -> builder.build())
 
           // set the callback function to insert offsets into cache after log append completed
+
+          /**
+           * 写入日志完成后处理
+           * @param responseStatus
+           */
           def putCacheCallback(responseStatus: Map[TopicPartition, PartitionResponse]): Unit = {
             // the append response should only contain the topics partition
             if (responseStatus.size != 1 || !responseStatus.contains(offsetTopicPartition))
@@ -403,6 +439,9 @@ class GroupMetadataManager(brokerId: Int,
             val responseError = group.inLock {
               if (status.error == Errors.NONE) {
                 if (!group.is(Dead)) {
+                  /**
+                   * 3. 更新本地的commit offset缓存（offsets）
+                   */
                   filteredOffsetMetadata.forKeyValue { (topicPartition, offsetAndMetadata) =>
                     if (isTxnOffsetCommit)
                       group.onTxnOffsetCommitAppend(producerId, topicPartition, CommitRecordMetadataAndOffset(Some(status.baseOffset), offsetAndMetadata))
@@ -470,6 +509,9 @@ class GroupMetadataManager(brokerId: Int,
             }
           }
 
+          /**
+           * 2. 写入日志
+           */
           appendForGroup(group, entries, putCacheCallback)
 
         case None =>

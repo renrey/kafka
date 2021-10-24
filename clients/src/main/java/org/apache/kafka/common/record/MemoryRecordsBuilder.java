@@ -126,8 +126,14 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         this.partitionLeaderEpoch = partitionLeaderEpoch;
         this.writeLimit = writeLimit;
         this.initialPosition = bufferStream.position();
+        /**
+         * batch Header的大小预估
+         */
         this.batchHeaderSizeInBytes = AbstractRecords.recordBatchHeaderSizeInBytes(magic, compressionType);
 
+        /**
+         * 从batch Header后的位置开始写入内容
+         */
         bufferStream.position(initialPosition + batchHeaderSizeInBytes);
         this.bufferStream = bufferStream;
         /**
@@ -135,6 +141,8 @@ public class MemoryRecordsBuilder implements AutoCloseable {
          * 主要利用ByteBuffer
          * wrapForOutput: 根据不同压缩类型，使用压缩流的DataOutputStream
          * 如果使用压缩，写入时先写入压缩流的缓冲区，然后用压缩算法对消息压缩，再写入到ByteBufferStream
+         *
+         * 实际对象：
          * DataOutputStream（压缩流stream(ByteBufferOutputStream(byteBuffer))）
          */
         this.appendStream = new DataOutputStream(compressionType.wrapForOutput(this.bufferStream, magic));
@@ -327,6 +335,9 @@ public class MemoryRecordsBuilder implements AutoCloseable {
             buffer().position(initialPosition);
             builtRecords = MemoryRecords.EMPTY;
         } else {
+            /**
+             * 往buffer写入Batch的header
+             */
             if (magic > RecordBatch.MAGIC_VALUE_V1)
                 this.actualCompressionRatio = (float) writeDefaultBatchHeader() / this.uncompressedRecordsSizeInBytes;
             else if (compressionType != CompressionType.NONE)
@@ -363,21 +374,29 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         ensureOpenForRecordBatchWrite();
         ByteBuffer buffer = bufferStream.buffer();
         int pos = buffer.position();
+        // position回到头
         buffer.position(initialPosition);
+        // batch的大小
         int size = pos - initialPosition;
+        // 实际内容的大小（减去header）
         int writtenCompressed = size - DefaultRecordBatch.RECORD_BATCH_OVERHEAD;
+        // 多少个offset？多少条消息
         int offsetDelta = (int) (lastOffset - baseOffset);
 
         final long maxTimestamp;
         if (timestampType == TimestampType.LOG_APPEND_TIME)
             maxTimestamp = logAppendTime;
         else
-            maxTimestamp = this.maxTimestamp;
+            maxTimestamp = this.maxTimestamp; // 最后插入的时间
 
+        /**
+         * 真正把Header写入batch的buffer中
+         */
         DefaultRecordBatch.writeHeader(buffer, baseOffset, offsetDelta, size, magic, compressionType, timestampType,
                 firstTimestamp, maxTimestamp, producerId, producerEpoch, baseSequence, isTransactional, isControlBatch,
                 partitionLeaderEpoch, numRecords);
 
+        // 回到末尾
         buffer.position(pos);
         return writtenCompressed;
     }
@@ -405,7 +424,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
 
     /**
      * Append a record and return its checksum for message format v0 and v1, or null for v2 and above.
-     * offset：消息record在log buffer的位置（序号，第几个）
+     * offset：消息record在log buffer的位置（序号，第几个），就是前一个插入的offset+1，从1开始
      */
     private Long appendWithOffset(long offset, boolean isControlRecord, long timestamp, ByteBuffer key,
                                   ByteBuffer value, Header[] headers) {
@@ -539,6 +558,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
      * @return CRC of the record or null if record-level CRC is not supported for the message format
      */
     public Long append(long timestamp, ByteBuffer key, ByteBuffer value, Header[] headers) {
+        // nextSequentialOffset：这条记录的offset，前一个offset+1
         return appendWithOffset(nextSequentialOffset(), timestamp, key, value, headers);
     }
 
@@ -717,8 +737,8 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         if (compressionType == CompressionType.NONE && timestampType == TimestampType.LOG_APPEND_TIME)
             timestamp = logAppendTime;
         /**
-         * 1.计算消息的实际大小
-         * 实际消息的组成：
+         * 1.计算消息内容大小
+         * 消息内容的组成：
          * header：crc(4字节，checksum) + magic(1字节，版本) + attributes(1字节，TimestampType) + timestamp(8字节，v1才有)
          * key_size：4字节
          * key值
@@ -741,6 +761,16 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         long crc = LegacyRecord.write(appendStream, magic, timestamp, key, value, CompressionType.NONE, timestampType);
         // 更新lastOffset
         recordWritten(offset, timestamp, size + Records.LOG_OVERHEAD);
+        /**
+         * 实际写入组成：
+         * offset(long) : 记录序号
+         * 下面内容的size（int）
+         * header：crc(4字节，checksum) + magic(1字节，版本) + attributes(1字节，TimestampType) + timestamp(8字节，v1才有)
+         * key_size：4字节
+         * key值
+         * value_size:4字节
+         * value值
+         */
         return crc;
     }
 
@@ -762,6 +792,7 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         uncompressedRecordsSizeInBytes += size;
         lastOffset = offset;
 
+        // 更新
         if (magic > RecordBatch.MAGIC_VALUE_V0 && timestamp > maxTimestamp) {
             maxTimestamp = timestamp;
             offsetOfMaxTimestamp = offset;
@@ -846,8 +877,8 @@ public class MemoryRecordsBuilder implements AutoCloseable {
         // note that the write limit is respected only after the first record is added which ensures we can always
         // create non-empty batches (this is used to disable batching when the producer's batch size is set to 0).
         /**
-         * appendStream == CLOSED_STREAM：就是对batch执行close操作
-         *
+         * appendStream == CLOSED_STREAM：已经对batch执行close操作
+         * or 已超过一个batch的大小（16KB）
          */
         return appendStream == CLOSED_STREAM || (this.numRecords > 0 && this.writeLimit <= estimatedBytesWritten());
     }

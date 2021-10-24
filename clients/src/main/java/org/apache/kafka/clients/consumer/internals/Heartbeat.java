@@ -82,6 +82,7 @@ public final class Heartbeat {
     void failHeartbeat() {
         update(time.milliseconds());
         heartbeatInFlight = false;
+        // 重置heartbeatTimer的开始时间为当前，可以的重试时间
         heartbeatTimer.reset(rebalanceConfig.retryBackoffMs);
 
         log.trace("Heartbeat failed, reset the timer to {}ms remaining", heartbeatTimer.remainingMs());
@@ -90,11 +91,17 @@ public final class Heartbeat {
     void receiveHeartbeat() {
         update(time.milliseconds());
         heartbeatInFlight = false;
+        // 重置sessionTimer的开始时间为当前, 新的过期时间
         sessionTimer.reset(rebalanceConfig.sessionTimeoutMs);
     }
 
     boolean shouldHeartbeat(long now) {
+        // 先更新当前时间
         update(now);
+        /**
+         * 比较当前时间是否到期（开始>=dead）
+         * heartbeatTimer就是记录失败心跳的，就是失败后需要等待指定时间才能重时
+         */
         return heartbeatTimer.isExpired();
     }
     

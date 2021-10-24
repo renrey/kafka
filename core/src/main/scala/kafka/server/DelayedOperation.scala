@@ -68,7 +68,9 @@ abstract class DelayedOperation(override val delayMs: Long,
   def forceComplete(): Boolean = {
     if (completed.compareAndSet(false, true)) {
       // cancel the timeout timer
+      // timer对象取消
       cancel()
+      // 执行
       onComplete()
       true
     } else {
@@ -107,6 +109,7 @@ abstract class DelayedOperation(override val delayMs: Long,
    * @return result of tryComplete
    */
   private[server] def safeTryCompleteOrElse(f: => Unit): Boolean = inLock(lock) {
+    // 尝试执行一次函数
     if (tryComplete()) true
     else {
       f
@@ -124,8 +127,9 @@ abstract class DelayedOperation(override val delayMs: Long,
    * run() method defines a task that is executed on timeout
    */
   override def run(): Unit = {
+    // 主要还是forceComplete执行过期操作
     if (forceComplete())
-      onExpiration()
+      onExpiration() // 记录指标
   }
 }
 
@@ -184,6 +188,9 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   newGauge("PurgatorySize", () => watched, metricsTags)
   newGauge("NumDelayedOperations", () => numDelayed, metricsTags)
 
+  /**
+   * 启动过期任务
+   */
   if (reaperEnabled)
     expirationReaper.start()
 
@@ -231,13 +238,18 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     // To avoid the above scenario, we recommend DelayedOperationPurgatory.checkAndComplete() be called without holding
     // any exclusive lock. Since DelayedOperationPurgatory.checkAndComplete() completes delayed operations asynchronously,
     // holding a exclusive lock to make the call is often unnecessary.
+    // 1. 先执行1次tryComplete
+    // 2. 不成功就把就把key、operation 放入对应watcherList中，这个key的watcher
+    // 3. 放入执行一次tryComplete
     if (operation.safeTryCompleteOrElse {
       watchKeys.foreach(key => watchForOperation(key, operation))
       if (watchKeys.nonEmpty) estimatedTotalOperations.incrementAndGet()
     }) return true
 
     // if it cannot be completed by now and hence is watched, add to the expire queue also
+    // 没完成，就放入时间轮定时
     if (!operation.isCompleted) {
+      // 放入Timer
       if (timerEnabled)
         timeoutTimer.add(operation)
       if (operation.isCompleted) {
@@ -299,9 +311,12 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
    * grab the removeWatchersLock to avoid the operation being added to a removed watcher list
    */
   private def watchForOperation(key: Any, operation: T): Unit = {
+    // 本key需要存放的WatcherList
     val wl = watcherList(key)
     inLock(wl.watchersLock) {
+      // 把key放入对应的watcherList，返回key的watcher
       val watcher = wl.watchersByKey.getAndMaybePut(key)
+      // watcher中存放操作对象
       watcher.watch(operation)
     }
   }
@@ -430,6 +445,7 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
     false) {
 
     override def doWork(): Unit = {
+      // 启动后，一直执行advanceClock
       advanceClock(200L)
     }
   }

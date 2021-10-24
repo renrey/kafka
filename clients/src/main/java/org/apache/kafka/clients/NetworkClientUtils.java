@@ -62,15 +62,22 @@ public final class NetworkClientUtils {
         long startTime = time.milliseconds();
         long expiryTime = startTime + timeoutMs;
 
+        /**
+         * 判断是否已连接，未连接在client.ready发起连接
+         */
         if (isReady(client, node, startTime) ||  client.ready(node, startTime))
             return true;
 
         long attemptStartTime = time.milliseconds();
+        // 连接未建立就一直循环
         while (!client.isReady(node, attemptStartTime) && attemptStartTime < expiryTime) {
             if (client.connectionFailed(node)) {
                 throw new IOException("Connection to " + node + " failed.");
             }
             long pollTimeout = expiryTime - attemptStartTime;
+            /**
+             * 获取网络事件，在这里进行处理连接完成的处理
+             */
             client.poll(pollTimeout, attemptStartTime);
             if (client.authenticationException(node) != null)
                 throw client.authenticationException(node);
@@ -91,8 +98,12 @@ public final class NetworkClientUtils {
      */
     public static ClientResponse sendAndReceive(KafkaClient client, ClientRequest request, Time time) throws IOException {
         try {
+            // 发送
             client.send(request, time.milliseconds());
             while (client.active()) {
+                /**
+                 * 直到有响应
+                 */
                 List<ClientResponse> responses = client.poll(Long.MAX_VALUE, time.milliseconds());
                 for (ClientResponse response : responses) {
                     if (response.requestHeader().correlationId() == request.correlationId()) {

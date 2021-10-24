@@ -932,7 +932,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             Cluster cluster = clusterAndWaitTime.cluster;
             byte[] serializedKey;
             try {
-                // key序列化
+                // key序列化,默认StringSerializer
                 serializedKey = keySerializer.serialize(record.topic(), record.headers(), record.key());
             } catch (ClassCastException cce) {
                 throw new SerializationException("Can't convert key of class " + record.key().getClass().getName() +
@@ -941,7 +941,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
             byte[] serializedValue;
             try {
-                // 值序列化
+                // 值序列化,默认StringSerializer，其实就是把我们的内容进行utf-8编码
                 serializedValue = valueSerializer.serialize(record.topic(), record.headers(), record.value());
             } catch (ClassCastException cce) {
                 throw new SerializationException("Can't convert value of class " + record.value().getClass().getName() +
@@ -981,6 +981,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 /**
                  * 触发partitioner更换一个新的Sticky分区StickyPartition
                  * ---证明当前最新分区的batch已满，可以换一个新的分区
+                 * --- 随机数 % 可用分区数
                  */
                 partitioner.onNewBatch(record.topic(), cluster, prevPartition);
                 // 新的分区

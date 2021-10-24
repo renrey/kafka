@@ -43,16 +43,22 @@ class CheckpointReadBuffer[T](location: String,
 
     var line: String = null
     try {
+      // 先读第一行
       line = reader.readLine()
       if (line == null)
         return Seq.empty
       line.toInt match {
+        // 第一行的值作为版本
         case fileVersion if fileVersion == version =>
+          // 读取第二行
           line = reader.readLine()
           if (line == null)
             return Seq.empty
+          // 第二行的值作为下面有多少行数据
           val expectedSize = line.toInt
+          // 实际内容的数据
           val entries = mutable.Buffer[T]()
+          // 开始下面行的数据
           line = reader.readLine()
           while (line != null) {
             val entry = formatter.fromLine(line)

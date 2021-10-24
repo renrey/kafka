@@ -50,6 +50,7 @@ case class ReplicaAssignment private (replicas: Seq[Int],
   }
 
   def reassignTo(target: Seq[Int]): ReplicaAssignment = {
+    // 原来的+指定的
     val fullReplicaSet = (target ++ originReplicas).distinct
     ReplicaAssignment(
       fullReplicaSet,
@@ -79,16 +80,20 @@ class ControllerContext {
   val shuttingDownBrokerIds = mutable.Set.empty[Int]
   private val liveBrokers = mutable.Set.empty[Broker]
   private val liveBrokerEpochs = mutable.Map.empty[Int, Long]
+  // /controll_epoch
   var epoch: Int = KafkaController.InitialControllerEpoch
+  // /controller_epoch节点znode当前的version
   var epochZkVersion: Int = KafkaController.InitialControllerEpochZkVersion
 
   val allTopics = mutable.Set.empty[String]
   var topicIds = mutable.Map.empty[String, Uuid]
   var topicNames = mutable.Map.empty[Uuid, String]
+  // topic的分区分配Map, key-topic, v-每个分区的分配Map
   val partitionAssignments = mutable.Map.empty[String, mutable.Map[Int, ReplicaAssignment]]
   private val partitionLeadershipInfo = mutable.Map.empty[TopicPartition, LeaderIsrAndControllerEpoch]
   val partitionsBeingReassigned = mutable.Set.empty[TopicPartition]
   val partitionStates = mutable.Map.empty[TopicPartition, PartitionState]
+  // 分区在broker的状态Map key-分区、brokerId ， v-状态
   val replicaStates = mutable.Map.empty[PartitionAndReplica, ReplicaState]
   val replicasOnOfflineDirs = mutable.Map.empty[Int, Set[TopicPartition]]
 
@@ -161,8 +166,11 @@ class ControllerContext {
   }
 
   def updatePartitionFullReplicaAssignment(topicPartition: TopicPartition, newAssignment: ReplicaAssignment): Unit = {
+    // 获取or创建 topic的分区分配Map在partitionAssignments
     val assignments = partitionAssignments.getOrElseUpdate(topicPartition.topic, mutable.Map.empty)
+    // 更新成新的分配策略
     val previous = assignments.put(topicPartition.partition, newAssignment)
+    // 原来的leader？
     val leadershipInfo = partitionLeadershipInfo.get(topicPartition)
     updatePreferredReplicaImbalanceMetric(topicPartition, previous, leadershipInfo,
       Some(newAssignment), leadershipInfo)
@@ -271,10 +279,16 @@ class ControllerContext {
   def onlineAndOfflineReplicas: (Set[PartitionAndReplica], Set[PartitionAndReplica]) = {
     val onlineReplicas = mutable.Set.empty[PartitionAndReplica]
     val offlineReplicas = mutable.Set.empty[PartitionAndReplica]
+    // 遍历每个topic的分区分配
     for ((topic, partitionAssignments) <- partitionAssignments;
-         (partitionId, assignment) <- partitionAssignments) {
+         (partitionId, assignment) <- partitionAssignments) { // 每个分区的分配
+      // 分区
       val partition = new TopicPartition(topic, partitionId)
+      // 遍历当前分区的分配broker
       for (replica <- assignment.replicas) {
+        /**
+         * 根据分区在broker上是否online，划分2个集合
+         */
         val partitionAndReplica = PartitionAndReplica(partition, replica)
         if (isReplicaOnline(replica, partition))
           onlineReplicas.add(partitionAndReplica)
@@ -483,7 +497,8 @@ class ControllerContext {
             preferredReplicaImbalanceCount -= 1
         }
       }
-
+      // 处理新的
+      // 遍历所有
       newReplicaAssignment.foreach { replicaAssignment =>
         newLeadershipInfo.foreach { leadershipInfo =>
           if (!hasPreferredLeader(replicaAssignment, leadershipInfo))

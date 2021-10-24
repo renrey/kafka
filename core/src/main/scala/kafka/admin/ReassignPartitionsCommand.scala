@@ -246,11 +246,13 @@ object ReassignPartitionsCommand extends Logging {
       verifyAssignment(adminClient,
         Utils.readFileAsString(opts.options.valueOf(opts.reassignmentJsonFileOpt)),
         opts.options.has(opts.preserveThrottlesOpt))
+    // 1. 生成分配方案
     } else if (opts.options.has(opts.generateOpt)) {
       generateAssignment(adminClient,
         Utils.readFileAsString(opts.options.valueOf(opts.topicsToMoveJsonFileOpt)),
         opts.options.valueOf(opts.brokerListOpt),
         !opts.options.has(opts.disableRackAware))
+    // 执行分配方案
     } else if (opts.options.has(opts.executeOpt)) {
       executeAssignment(adminClient,
         opts.options.has(opts.additionalOpt),
@@ -748,10 +750,18 @@ object ReassignPartitionsCommand extends Logging {
                          brokerListString: String,
                          enableRackAwareness: Boolean)
                          : (Map[TopicPartition, Seq[Int]], Map[TopicPartition, Seq[Int]]) = {
+    // 获取文本中的需要分配的topic
+    // broker看有没有传入broker-list
     val (brokersToReassign, topicsToReassign) =
       parseGenerateAssignmentArgs(reassignmentJson, brokerListString)
+
+    // 请求参数的指定kafka节点，获取topic当前每个分区的分配replica
     val currentAssignments = getReplicaAssignmentForTopics(adminClient, topicsToReassign)
+    // 获取每个broker的信息
     val brokerMetadatas = getBrokerMetadata(adminClient, brokersToReassign, enableRackAwareness)
+    /**
+     * 生成新的分配方案
+     */
     val proposedAssignments = calculateAssignment(currentAssignments, brokerMetadatas)
     println("Current partition replica assignment\n%s\n".
       format(formatAsReassignmentJson(currentAssignments, Map.empty)))
@@ -803,6 +813,7 @@ object ReassignPartitionsCommand extends Logging {
     val proposedAssignments = mutable.Map[TopicPartition, Seq[Int]]()
     groupedByTopic.forKeyValue { (topic, assignment) =>
       val (_, replicas) = assignment.head
+      // 分配
       val assignedReplicas = AdminUtils.
         assignReplicasToBrokers(brokerMetadatas, assignment.size, replicas.size)
       proposedAssignments ++= assignedReplicas.map { case (partition, replicas) =>
@@ -925,6 +936,7 @@ object ReassignPartitionsCommand extends Logging {
     if (duplicateReassignments.nonEmpty)
       throw new AdminCommandFailedException("Broker list contains duplicate entries: %s".
         format(duplicateReassignments.mkString(",")))
+    // 从文本获取topic
     val topicsToReassign = parseTopicsData(reassignmentJson)
     val duplicateTopicsToReassign = CoreUtils.duplicates(topicsToReassign)
     if (duplicateTopicsToReassign.nonEmpty)
@@ -955,6 +967,7 @@ object ReassignPartitionsCommand extends Logging {
                         timeoutMs: Long = 10000L,
                         time: Time = Time.SYSTEM): Unit = {
     val (proposedParts, proposedReplicas) = parseExecuteAssignmentArgs(reassignmentJson)
+    // 获取kafka目前的分区分配
     val currentReassignments = adminClient.
       listPartitionReassignments().reassignments().get().asScala
     // If there is an existing assignment, check for --additional before proceeding.
@@ -981,6 +994,9 @@ object ReassignPartitionsCommand extends Logging {
     }
 
     // Execute the partition reassignments.
+    /**
+     * 发送AlterPartitionReassignments请求到broker
+     */
     val errors = alterPartitionReassignments(adminClient, proposedParts)
     if (errors.nonEmpty) {
       throw new TerseReassignmentFailureException(
@@ -992,6 +1008,10 @@ object ReassignPartitionsCommand extends Logging {
     println("Successfully started partition reassignment%s for %s".format(
       if (proposedParts.size == 1) "" else "s",
       proposedParts.keySet.toBuffer.sortWith(compareTopicPartitions).mkString(",")))
+
+    /**
+     * 执行分区log目录移动
+     */
     if (proposedReplicas.nonEmpty) {
       executeMoves(adminClient, proposedReplicas, timeoutMs, time)
     }
@@ -1601,6 +1621,9 @@ object ReassignPartitionsCommand extends Logging {
   }
 
   def parseTopicsData(version: Int, js: JsonValue): Seq[String] = {
+    /**
+     * 所以version必须1
+     */
     version match {
       case 1 =>
         for {

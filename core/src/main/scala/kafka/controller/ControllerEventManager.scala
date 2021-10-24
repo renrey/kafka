@@ -49,6 +49,7 @@ class QueuedEvent(val event: ControllerEvent,
     if (spent.getAndSet(true))
       return
     processingStarted.countDown()
+    // KafkaController执行
     processor.process(event)
   }
 
@@ -76,8 +77,10 @@ class ControllerEventManager(controllerId: Int,
 
   @volatile private var _state: ControllerState = ControllerState.Idle
   private val putLock = new ReentrantLock()
+  // 事件的堵塞队列
   private val queue = new LinkedBlockingQueue[QueuedEvent]
   // Visible for test
+  // event线程
   private[controller] var thread = new ControllerEventThread(ControllerEventThreadName)
 
   private val eventQueueTimeHist = newHistogram(EventQueueTimeMetricName)
@@ -99,6 +102,7 @@ class ControllerEventManager(controllerId: Int,
     }
   }
 
+  // 把事件放入堵塞队列
   def put(event: ControllerEvent): QueuedEvent = inLock(putLock) {
     val queuedEvent = new QueuedEvent(event, time.milliseconds())
     queue.put(queuedEvent)
@@ -117,7 +121,9 @@ class ControllerEventManager(controllerId: Int,
   class ControllerEventThread(name: String) extends ShutdownableThread(name = name, isInterruptible = false) {
     logIdent = s"[ControllerEventThread controllerId=$controllerId] "
 
+    // 启动后执行
     override def doWork(): Unit = {
+      // 从堵塞队列获取事件
       val dequeued = pollFromEventQueue()
       dequeued.event match {
         case ShutdownEventThread => // The shutting down of the thread has been initiated at this point. Ignore this event.
@@ -127,6 +133,7 @@ class ControllerEventManager(controllerId: Int,
           eventQueueTimeHist.update(time.milliseconds() - dequeued.enqueueTimeMs)
 
           try {
+            // 执行
             def process(): Unit = dequeued.process(processor)
 
             rateAndTimeMetrics.get(state) match {

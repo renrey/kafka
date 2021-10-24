@@ -42,9 +42,9 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
 
   /**
    * Creates the topic with given configuration
-   * @param topic topic name to create
-   * @param partitions  Number of partitions to be set
-   * @param replicationFactor Replication factor
+   * @param topic topic name to create 创建topic名称
+   * @param partitions  Number of partitions to be set 分区数量
+   * @param replicationFactor Replication factor replica数量，就是一个分区需要保存多少份
    * @param topicConfig  topic configs
    * @param rackAwareMode
    * @param usesTopicId Boolean indicating whether the topic ID will be created
@@ -55,7 +55,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
                   topicConfig: Properties = new Properties,
                   rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
                   usesTopicId: Boolean = false): Unit = {
-    // 1. 获取所有broker
+    // 1. 获取现有所有的broker
     val brokerMetadatas = getBrokerMetadatas(rackAwareMode)
     // 2. 生成分配方案
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
@@ -66,11 +66,12 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   /**
    * Gets broker metadata list
    * @param rackAwareMode
-   * @param brokerList
+   * @param brokerList 需要留下的broker
    * @return
    */
   def getBrokerMetadatas(rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
                          brokerList: Option[Seq[Int]] = None): Seq[BrokerMetadata] = {
+    // 1. 从zk获取所有broker信息（每个znode的data）
     val allBrokers = zkClient.getAllBrokersInCluster
     val brokers = brokerList.map(brokerIds => allBrokers.filter(b => brokerIds.contains(b.id))).getOrElse(allBrokers)
     val brokersWithRack = brokers.filter(_.rack.nonEmpty)
@@ -82,6 +83,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
       case RackAwareMode.Disabled => brokers.map(broker => BrokerMetadata(broker.id, None))
       case RackAwareMode.Safe if brokersWithRack.size < brokers.size =>
         brokers.map(broker => BrokerMetadata(broker.id, None))
+      // 默认
       case _ => brokers.map(broker => BrokerMetadata(broker.id, broker.rack))
     }
     brokerMetadatas.sortBy(_.id)
@@ -109,8 +111,16 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
       s"assignment $partitionReplicaAssignment")
 
     // write out the config if there is any, this isn't transactional with the partition assignments
+    /**
+     * 1. 创建znode，并setData配置内容，主要保存配置内容
+     * path：/config/topics/${topic}
+     */
     zkClient.setOrCreateEntityConfigs(ConfigType.Topic, topic, config)
 
+    /**
+     * 2. 分区分配策略
+     * path: /brokers/topic/
+     */
     // create the partition assignment
     writeTopicPartitionAssignment(topic, partitionReplicaAssignment.map { case (k, v) => k -> ReplicaAssignment(v) },
       isUpdate = false, usesTopicId)
@@ -165,9 +175,18 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
     try {
       val assignment = replicaAssignment.map { case (partitionId, replicas) => (new TopicPartition(topic,partitionId), replicas) }.toMap
 
+      // 全量更新
       if (!isUpdate) {
+        // 是否使用topicId，默认不用
         val topicIdOpt = if (usesTopicId) Some(Uuid.randomUuid()) else None
+        /**
+         * 创建znode
+         * path:/brokers/topics/${topic}
+         * data:ReplicaAssignment对象
+         */
+        // v.replicas就是分配对应的broker编号数组，顺序就是replica的顺序
         zkClient.createTopicAssignment(topic, topicIdOpt, assignment.map { case (k, v) => k -> v.replicas })
+      // 增量
       } else {
         val topicIds = zkClient.getTopicIdsForTopics(Set(topic))
         zkClient.setTopicAssignment(topic, topicIds.get(topic), assignment)

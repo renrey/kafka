@@ -193,6 +193,8 @@ public final class RecordAccumulator {
         if (headers == null) headers = Record.EMPTY_HEADERS;
         try {
             // check if we have an in-progress batch
+
+            // 获取对应分区的batch队列，没有就创建
             Deque<ProducerBatch> dq = getOrCreateDeque(tp);
             synchronized (dq) {
                 if (closed)
@@ -215,7 +217,7 @@ public final class RecordAccumulator {
              */
 
             byte maxUsableMagic = apiVersions.maxUsableProduceMagic();
-            // 当前batch的大小，一般就是batch.size的值，默认16384B，除非当前消息超出范围
+            // 当前batch的大小，一般就是batch.size的值，默认16384B(16KB)，除非当前消息超出范围
             int size = Math.max(this.batchSize, AbstractRecords.estimateSizeInBytesUpperBound(maxUsableMagic, compression, key, value, headers));
             log.trace("Allocating a new {} byte message buffer for topic {} partition {} with remaining timeout {}ms", size, tp.topic(), tp.partition(), maxTimeToBlock);
             /**
@@ -299,7 +301,8 @@ public final class RecordAccumulator {
             else
                 return new RecordAppendResult(future, deque.size() > 1 || last.isFull(), false, false);
         }
-        // 队列中无batch或者batch已满，需要创建一个batch
+        // 队列中无batch(新建)
+        // 或者batch已满（已满），需要创建一个batch
         return null;
     }
 

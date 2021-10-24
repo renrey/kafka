@@ -98,7 +98,7 @@ import static org.apache.kafka.common.record.Records.LOG_OVERHEAD;
  */
 public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRecordBatch {
     static final int BASE_OFFSET_OFFSET = 0;
-    static final int BASE_OFFSET_LENGTH = 8;
+    static final int BASE_OFFSET_LENGTH = 8; // 8*8=64，long
     static final int LENGTH_OFFSET = BASE_OFFSET_OFFSET + BASE_OFFSET_LENGTH;
     static final int LENGTH_LENGTH = 4;
     static final int PARTITION_LEADER_EPOCH_OFFSET = LENGTH_OFFSET + LENGTH_LENGTH;
@@ -146,10 +146,12 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
 
     @Override
     public void ensureValid() {
+        // 实际batch（header+内容）占用的大小 < header的固定大小
+        // 那肯定不正确
         if (sizeInBytes() < RECORD_BATCH_OVERHEAD)
             throw new CorruptRecordException("Record batch is corrupt (the size " + sizeInBytes() +
                     " is smaller than the minimum allowed overhead " + RECORD_BATCH_OVERHEAD + ")");
-
+        // 校验CRC是否正确
         if (!isValid())
             throw new CorruptRecordException("Record is corrupt (stored crc = " + checksum()
                     + ", computed crc = " + computeChecksum() + ")");
@@ -219,6 +221,7 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
 
     @Override
     public int sizeInBytes() {
+        // header的大小 + 内容大小
         return LOG_OVERHEAD + buffer.getInt(LENGTH_OFFSET);
     }
 
@@ -354,6 +357,8 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
 
     @Override
     public void setLastOffset(long offset) {
+        // 更新BASE_OFFSET, 本个batch的第一条消息的准确offset
+        // 原来的lastOffsetDelta是代表这个有多少条消息
         buffer.putLong(BASE_OFFSET_OFFSET, offset - lastOffsetDelta());
     }
 
@@ -466,12 +471,12 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
             throw new IllegalArgumentException("Invalid message timestamp " + firstTimestamp);
 
         short attributes = computeAttributes(compressionType, timestampType, isTransactional, isControlBatch);
-
+        // 从头开始写
         int position = buffer.position();
-        buffer.putLong(position + BASE_OFFSET_OFFSET, baseOffset);
-        buffer.putInt(position + LENGTH_OFFSET, sizeInBytes - LOG_OVERHEAD);
-        buffer.putInt(position + PARTITION_LEADER_EPOCH_OFFSET, partitionLeaderEpoch);
-        buffer.put(position + MAGIC_OFFSET, magic);
+        buffer.putLong(position + BASE_OFFSET_OFFSET, baseOffset); // baseOffset（64位）
+        buffer.putInt(position + LENGTH_OFFSET, sizeInBytes - LOG_OVERHEAD); // 第8位(前面64位long)写，实际内容大小
+        buffer.putInt(position + PARTITION_LEADER_EPOCH_OFFSET, partitionLeaderEpoch); // partitionLeaderEpoch,集群Leader版本
+        buffer.put(position + MAGIC_OFFSET, magic);// 1位magic，版本好
         buffer.putShort(position + ATTRIBUTES_OFFSET, attributes);
         buffer.putLong(position + FIRST_TIMESTAMP_OFFSET, firstTimestamp);
         buffer.putLong(position + MAX_TIMESTAMP_OFFSET, maxTimestamp);
@@ -482,7 +487,7 @@ public class DefaultRecordBatch extends AbstractRecordBatch implements MutableRe
         buffer.putInt(position + RECORDS_COUNT_OFFSET, numRecords);
         long crc = Crc32C.compute(buffer, ATTRIBUTES_OFFSET, sizeInBytes - ATTRIBUTES_OFFSET);
         buffer.putInt(position + CRC_OFFSET, (int) crc);
-        buffer.position(position + RECORD_BATCH_OVERHEAD);
+        buffer.position(position + RECORD_BATCH_OVERHEAD); // 下标指向开始写batch内容
     }
 
     @Override

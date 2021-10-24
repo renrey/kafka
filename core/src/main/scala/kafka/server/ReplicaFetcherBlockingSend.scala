@@ -52,6 +52,7 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
   private val socketTimeout: Int = brokerConfig.replicaSocketTimeoutMs
 
   private val (networkClient, reconfigurableChannelBuilder) = {
+    // channel的builder
     val channelBuilder = ChannelBuilders.clientChannelBuilder(
       brokerConfig.interBrokerSecurityProtocol,
       JaasContext.Type.SERVER,
@@ -68,6 +69,7 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
         Some(reconfigurable)
       case _ => None
     }
+    // 创建selector
     val selector = new Selector(
       NetworkReceive.UNLIMITED,
       brokerConfig.connectionsMaxIdleMs,
@@ -79,6 +81,7 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
       channelBuilder,
       logContext
     )
+    // networkClient
     val networkClient = new NetworkClient(
       selector,
       new ManualMetadataUpdater(),
@@ -102,11 +105,19 @@ class ReplicaFetcherBlockingSend(sourceBroker: BrokerEndPoint,
 
   override def sendRequest(requestBuilder: Builder[_ <: AbstractRequest]): ClientResponse = {
     try {
+      // 判断是否已建立连接，未建立会在这里建立
       if (!NetworkClientUtils.awaitReady(networkClient, sourceNode, time, socketTimeout))
         throw new SocketTimeoutException(s"Failed to connect within $socketTimeout ms")
       else {
+        /**
+         * 构建请求
+         */
         val clientRequest = networkClient.newClientRequest(sourceBroker.id.toString, requestBuilder,
           time.milliseconds(), true)
+
+        /**
+         * 发送请求，并且等待响应（串行）
+          */
         NetworkClientUtils.sendAndReceive(networkClient, clientRequest, time)
       }
     }

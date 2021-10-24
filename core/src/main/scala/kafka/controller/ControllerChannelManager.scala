@@ -70,6 +70,7 @@ class ControllerChannelManager(controllerContext: ControllerContext,
     controllerContext.liveOrShuttingDownBrokers.foreach(addNewBroker)
 
     brokerLock synchronized {
+      // 对每个broker都启动一个发送线程
       brokerStateInfo.foreach(brokerState => startRequestSendThread(brokerState._1))
     }
   }
@@ -375,14 +376,15 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
                                        isNew: Boolean): Unit = {
 
     brokerIds.filter(_ >= 0).foreach { brokerId =>
+      // LEADER_AND_ISR请求的map
       val result = leaderAndIsrRequestMap.getOrElseUpdate(brokerId, mutable.Map.empty)
       val alreadyNew = result.get(topicPartition).exists(_.isNew)
       val leaderAndIsr = leaderIsrAndControllerEpoch.leaderAndIsr
       result.put(topicPartition, new LeaderAndIsrPartitionState()
         .setTopicName(topicPartition.topic)
-        .setPartitionIndex(topicPartition.partition)
+        .setPartitionIndex(topicPartition.partition) // 分区
         .setControllerEpoch(leaderIsrAndControllerEpoch.controllerEpoch)
-        .setLeader(leaderAndIsr.leader)
+        .setLeader(leaderAndIsr.leader) // leader
         .setLeaderEpoch(leaderAndIsr.leaderEpoch)
         .setIsr(leaderAndIsr.isr.map(Integer.valueOf).asJava)
         .setZkVersion(leaderAndIsr.zkVersion)
@@ -392,6 +394,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
         .setIsNew(isNew || alreadyNew))
     }
 
+    // 给其他broker发送UPDATE_METADATA
     addUpdateMetadataRequestForBrokers(controllerContext.liveOrShuttingDownBrokerIds.toSeq, Set(topicPartition))
   }
 

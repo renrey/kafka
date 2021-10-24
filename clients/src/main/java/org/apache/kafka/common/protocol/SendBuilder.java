@@ -44,6 +44,9 @@ import java.util.Queue;
 public class SendBuilder implements Writable {
     private final ByteBuffer buffer;
 
+    /**
+     * 用于给MultiRecordsSend，发送写入时使用
+     */
     private final Queue<Send> sends = new ArrayDeque<>(1);
     private long sizeOfSends = 0;
 
@@ -141,8 +144,17 @@ public class SendBuilder implements Writable {
         } else if (records instanceof UnalignedMemoryRecords) {
             flushPendingBuffer();
             addBuffer(((UnalignedMemoryRecords) records).buffer());
+            /**
+             * fetch消息：LazyDownConversionRecords
+             */
         } else {
+            // 1. 把前面手动写入的字节数组生成Send，加入sends队列
             flushPendingSend();
+            /**
+             * 2. 把这个record的send加入sends队列
+             * fetch时：LazyDownConversionRecordsSend（封装了FileRecord），后面使用MultiRecordsSend写入，
+             * 就调用对应write方法进行网络写操作（实际这里FileRecord使用零拷贝写入网络）
+             */
             addSend(records.toSend());
         }
     }

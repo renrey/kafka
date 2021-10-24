@@ -92,7 +92,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * Even when everything times out, it still has advantageous when there are many items in the timer.
  * Its insert cost (including reinsert) and delete cost are O(m) and O(1), respectively while priority
  * queue based timers takes O(log N) for both insert and delete where N is the number of items in the queue.
- *
+ * 插入和删除，分别为O(m)、O(1), 而优先队列的都为O(log N)。
  * This class is not thread-safe. There should not be any add calls while advanceClock is executing.
  * It is caller's responsibility to enforce it. Simultaneous add calls are thread-safe.
  */
@@ -102,6 +102,11 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
   private[this] val interval = tickMs * wheelSize
   private[this] val buckets = Array.tabulate[TimerTaskList](wheelSize) { _ => new TimerTaskList(taskCounter) }
 
+  /**
+   * 第一个bucket的开始时间，其实就是tickMs的倍数，也是一种分桶策略
+   * 代表第一个bucket的范围是已过期的
+   * startMs - (startMs % tickMs)就为了找到startMs所在的bucket的开始时间
+   */
   private[this] var currentTime = startMs - (startMs % tickMs) // rounding down to multiple of tickMs
 
   // overflowWheel can potentially be updated and read by two concurrent threads through add().
@@ -112,9 +117,9 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
     synchronized {
       if (overflowWheel == null) {
         overflowWheel = new TimingWheel(
-          tickMs = interval,
-          wheelSize = wheelSize,
-          startMs = currentTime,
+          tickMs = interval, // 上级轮每个bucket间隔就是当前的时间范围
+          wheelSize = wheelSize, // 还是20个格
+          startMs = currentTime, //
           taskCounter = taskCounter,
           queue
         )
@@ -124,20 +129,38 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
 
   def add(timerTaskEntry: TimerTaskEntry): Boolean = {
     val expiration = timerTaskEntry.expirationMs
-
+    // 任务已经取消，不用放入
     if (timerTaskEntry.cancelled) {
       // Cancelled
       false
+    // 已经到期，不用放入
     } else if (expiration < currentTime + tickMs) {
       // Already expired
       false
+
+      /**
+       * 在这个时间轮的时间范围内interval
+        */
     } else if (expiration < currentTime + interval) {
       // Put in its own bucket
+      /**
+       * 1. 计算virtualId，这样可以保证某个间隔内的id都一样
+       */
       val virtualId = expiration / tickMs
+      /**
+       * 2. 获取virtualId的bucket，virtualId % wheelSize
+       */
       val bucket = buckets((virtualId % wheelSize.toLong).toInt)
+
+      /**
+       * 3. 放入bucket，双向链表
+       */
       bucket.add(timerTaskEntry)
 
       // Set the bucket expiration time
+      /**
+       * 4. 更新bucket的过期时间，如果变了，就放入延迟队列，等待到期（其实就是把旧的已过期的bucket重新使用）
+       */
       if (bucket.setExpiration(virtualId * tickMs)) {
         // The bucket needs to be enqueued because it was an expired bucket
         // We only need to enqueue the bucket when its expiration time has changed, i.e. the wheel has advanced
@@ -147,6 +170,10 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
         queue.offer(bucket)
       }
       true
+
+      /**
+       * 超过这个轮的时间范围，新增上级的轮，并放入到上级轮中
+        */
     } else {
       // Out of the interval. Put it into the parent timer
       if (overflowWheel == null) addOverflowWheel()
@@ -156,10 +183,17 @@ private[timer] class TimingWheel(tickMs: Long, wheelSize: Int, startMs: Long, ta
 
   // Try to advance the clock
   def advanceClock(timeMs: Long): Unit = {
+    // 目标时间timeMs >= currentTime + 时间轮间隔
+    // 就是目标时间在currentTime那个bucket后面的bucket（不是第一个），进行跳转
+    // 如果目标时间在currentTime的间隔范围内，就不跳转（因为当前轮已经指向这个格）
     if (timeMs >= currentTime + tickMs) {
+      // 把currentTime更新成timeMs所在的bucket的开头，等于跳转到这格
       currentTime = timeMs - (timeMs % tickMs)
 
       // Try to advance the clock of the overflow wheel if present
+      /**
+       * 有上级轮，把上级轮也跳转一格
+       */
       if (overflowWheel != null) overflowWheel.advanceClock(currentTime)
     }
   }

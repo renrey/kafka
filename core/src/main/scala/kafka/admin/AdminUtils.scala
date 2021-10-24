@@ -37,6 +37,11 @@ object AdminUtils extends Logging {
    * <li> If all brokers have rack information, assign the replicas for each partition to different racks if possible</li>
    * </ol>
    *
+   * 副本分配的3个目标：
+   * 1.在broker间扩散传播副本
+   * 2. 每个分配到特定broker的分区，副本可以传播到其他broker
+   * 3. 如果所有broker都有rack，如果可能的话，把为每个分区都分配副本到不同的rack
+   *
    * To achieve this goal for replica assignment without considering racks, we:
    * <ol>
    * <li> Assign the first replica of each partition by round-robin, starting from a random position in the broker list.</li>
@@ -117,7 +122,7 @@ object AdminUtils extends Logging {
       throw new InvalidReplicationFactorException("Replication factor must be larger than 0.")
     if (replicationFactor > brokerMetadatas.size)
       throw new InvalidReplicationFactorException(s"Replication factor: $replicationFactor larger than available brokers: ${brokerMetadatas.size}.")
-    // 非rack分配
+    // 非rack分配,默认
     if (brokerMetadatas.forall(_.rack.isEmpty))
       assignReplicasToBrokersRackUnaware(nPartitions, replicationFactor, brokerMetadatas.map(_.id), fixedStartIndex,
         startPartitionId)
@@ -136,16 +141,28 @@ object AdminUtils extends Logging {
                                                  startPartitionId: Int): Map[Int, Seq[Int]] = {
     val ret = mutable.Map[Int, Seq[Int]]()
     val brokerArray = brokerList.toArray
+    // 开始下标(其实就是分配取模时增量值)，随机生成
     val startIndex = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(brokerArray.length)
+    // 当前分区id（遍历），默认0开始
     var currentPartitionId = math.max(0, startPartitionId)
+    // replica距离，也是随机生成的
     var nextReplicaShift = if (fixedStartIndex >= 0) fixedStartIndex else rand.nextInt(brokerArray.length)
+    // 遍历分区数
     for (_ <- 0 until nPartitions) {
+      // 已经给所有broker都分配了一轮分区，下一轮分配的分区，nextReplicaShift+1
       if (currentPartitionId > 0 && (currentPartitionId % brokerArray.length == 0))
         nextReplicaShift += 1
+      // 本分区第一个replica的broker下标
+      /**
+       * 分区的第一个replica分配算法：（分区编号+随机数(startIndex, 分区数量内的) ）% 分区数量
+       */
       val firstReplicaIndex = (currentPartitionId + startIndex) % brokerArray.length
       val replicaBuffer = mutable.ArrayBuffer(brokerArray(firstReplicaIndex))
-      for (j <- 0 until replicationFactor - 1)
+      // 遍历replica-1次，因此第1个已经选好了
+      for (j <- 0 until replicationFactor - 1) {
+        // 计算当前分区其他replica的broker序号
         replicaBuffer += brokerArray(replicaIndex(firstReplicaIndex, nextReplicaShift, j, brokerArray.length))
+      }
       ret.put(currentPartitionId, replicaBuffer)
       currentPartitionId += 1
     }
@@ -239,6 +256,10 @@ object AdminUtils extends Logging {
   }
 
   private def replicaIndex(firstReplicaIndex: Int, secondReplicaShift: Int, replicaIndex: Int, nBrokers: Int): Int = {
+    /**
+     * shift: 1 + (nextReplicaShift + 当前replica序号-1) % (broker数量-1)
+     * 分配算法：(第一个replica的broker序号 + shift) % broker数量
+     */
     val shift = 1 + (secondReplicaShift + replicaIndex) % (nBrokers - 1)
     (firstReplicaIndex + shift) % nBrokers
   }

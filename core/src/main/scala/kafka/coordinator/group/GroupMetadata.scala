@@ -199,6 +199,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   private[group] val lock = new ReentrantLock
 
+  // 初始一般是EMPTY
   private var state: GroupState = initialState
   var currentStateTimestamp: Option[Long] = Some(time.milliseconds())
   var protocolType: Option[String] = None
@@ -206,6 +207,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
   var generationId = 0
   private var leaderId: Option[String] = None
 
+  // 成员Map
   private val members = new mutable.HashMap[String, MemberMetadata]
   // Static membership mapping [key: group.instance.id, value: member.id]
   private val staticMembers = new mutable.HashMap[String, String]
@@ -245,10 +247,18 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     assert(this.protocolType.orNull == member.protocolType)
     assert(supportsProtocols(member.protocolType, MemberMetadata.plainProtocolSet(member.supportedProtocols)))
 
+    /**
+     * 当前group无leader，直接变成leader
+     * --- 所以第一个加入的consumer，就会变成leader
+     */
     if (leaderId.isEmpty)
       leaderId = Some(member.memberId)
     members.put(member.memberId, member)
     member.supportedProtocols.foreach{ case (protocol, _) => supportedProtocols(protocol) += 1 }
+
+    /**
+     * 加入awaitingJoinCallback
+     */
     member.awaitingJoinCallback = callback
     if (member.isAwaitingJoin)
       numMembersAwaitingJoin += 1
@@ -275,8 +285,10 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     */
   def maybeElectNewJoinedLeader(): Boolean = {
     leaderId.exists { currentLeaderId =>
+      // leader的信息
       val currentLeader = get(currentLeaderId)
       if (!currentLeader.isAwaitingJoin) {
+        // 重新选出一个leader
         members.find(_._2.isAwaitingJoin) match {
           case Some((anyJoinedMemberId, anyJoinedMember)) =>
             leaderId = Option(anyJoinedMemberId)
@@ -293,6 +305,9 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
             false
         }
       } else {
+        /**
+         * 一般都是等待join，返回true
+         */
         true
       }
     }
@@ -349,6 +364,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def currentState = state
 
+  // 不是isAwaitingJoin状态的consumer
   def notYetRejoinedMembers = members.filter(!_._2.isAwaitingJoin).toMap
 
   def hasAllMembersJoined = members.size == numMembersAwaitingJoin && pendingMembers.isEmpty
@@ -377,10 +393,15 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def generateMemberId(clientId: String,
                        groupInstanceId: Option[String]): String = {
+    // 判断groupid有没有传
     groupInstanceId match {
       case None =>
+        // 没有时，用clientId作为group的位置
         clientId + GroupMetadata.MemberIdDelimiter + UUID.randomUUID().toString
       case Some(instanceId) =>
+        /**
+         * id格式：groupId-随机uuid
+         */
         instanceId + GroupMetadata.MemberIdDelimiter + UUID.randomUUID().toString
     }
   }
@@ -527,9 +548,11 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def initNextGeneration(): Unit = {
     if (members.nonEmpty) {
+      // generationId+1
       generationId += 1
       protocolName = Some(selectProtocol)
       subscribedTopics = computeSubscribedTopics()
+      // 状态变为CompletingRebalance
       transitionTo(CompletingRebalance)
     } else {
       generationId += 1

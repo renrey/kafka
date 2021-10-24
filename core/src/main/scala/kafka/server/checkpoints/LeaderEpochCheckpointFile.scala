@@ -61,6 +61,13 @@ object LeaderEpochCheckpointFile {
  * 0  1     <- the format is: leader_epoch(int32) start_offset(int64)
  * 1  2
  * -----checkpoint file end----------
+ *
+ * --- 文件begin---
+ * 0 (当前版本)
+ * 2 （版本entry数量）
+ * 0 1 （第一个leader_epoch32位，第二个statrt_offset64）
+ * 1 2
+ * -- end ---
  */
 class LeaderEpochCheckpointFile(val file: File, logDirFailureChannel: LogDirFailureChannel = null) extends LeaderEpochCheckpoint {
   import LeaderEpochCheckpointFile._

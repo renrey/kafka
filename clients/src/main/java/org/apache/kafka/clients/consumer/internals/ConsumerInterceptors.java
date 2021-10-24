@@ -56,6 +56,7 @@ public class ConsumerInterceptors<K, V> implements Closeable {
      */
     public ConsumerRecords<K, V> onConsume(ConsumerRecords<K, V> records) {
         ConsumerRecords<K, V> interceptRecords = records;
+        // 执行完所有拦截器
         for (ConsumerInterceptor<K, V> interceptor : this.interceptors) {
             try {
                 interceptRecords = interceptor.onConsume(interceptRecords);
@@ -64,6 +65,7 @@ public class ConsumerInterceptors<K, V> implements Closeable {
                 log.warn("Error executing interceptor onConsume callback", e);
             }
         }
+        // 返回records
         return interceptRecords;
     }
 

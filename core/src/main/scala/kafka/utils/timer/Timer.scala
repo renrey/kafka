@@ -63,12 +63,13 @@ class SystemTimer(executorName: String,
 
   private[this] val delayQueue = new DelayQueue[TimerTaskList]()
   private[this] val taskCounter = new AtomicInteger(0)
+  // 初始时间轮
   private[this] val timingWheel = new TimingWheel(
     tickMs = tickMs, // 1ms
     wheelSize = wheelSize, //20
     startMs = startMs,
     taskCounter = taskCounter,
-    delayQueue
+    delayQueue // 延迟队列，用于触发过期
   )
 
   // Locks used to protect data structures while ticking
@@ -76,9 +77,12 @@ class SystemTimer(executorName: String,
   private[this] val readLock = readWriteLock.readLock()
   private[this] val writeLock = readWriteLock.writeLock()
 
+  // 新增定时任务
   def add(timerTask: TimerTask): Unit = {
     readLock.lock()
     try {
+      // 创建
+      // expirationMs：过期的时间点
       addTimerTaskEntry(new TimerTaskEntry(timerTask, timerTask.delayMs + Time.SYSTEM.hiResClockMs))
     } finally {
       readLock.unlock()
@@ -86,8 +90,12 @@ class SystemTimer(executorName: String,
   }
 
   private def addTimerTaskEntry(timerTaskEntry: TimerTaskEntry): Unit = {
+    // 先放入时间轮
     if (!timingWheel.add(timerTaskEntry)) {
       // Already expired or cancelled
+      /**
+       * 放入失败，放入时到期、到期重新放入，都是在这里提交到线程池执行
+       */
       if (!timerTaskEntry.cancelled)
         taskExecutor.submit(timerTaskEntry.timerTask)
     }
@@ -98,13 +106,18 @@ class SystemTimer(executorName: String,
    * waits up to timeoutMs before giving up.
    */
   def advanceClock(timeoutMs: Long): Boolean = {
+    // 默认等待200ms
     var bucket = delayQueue.poll(timeoutMs, TimeUnit.MILLISECONDS)
     if (bucket != null) {
       writeLock.lock()
       try {
+        // 任务到期，自动取出的
         while (bucket != null) {
+          // 1. 把时间轮更新指向到当前时间所在bucket
           timingWheel.advanceClock(bucket.getExpiration)
+          // 2. 遍历bucket的链表，取出每个TaskEntry执行addTimerTaskEntry: 判断到期，提交到线程池执行
           bucket.flush(addTimerTaskEntry)
+          // 3. 尝试继续等待到期任务
           bucket = delayQueue.poll()
         }
       } finally {
