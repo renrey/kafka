@@ -634,6 +634,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
 
         Set<String> allSubscribedTopics = new HashSet<>();
+        // 每个consumer的订阅信息
         Map<String, Subscription> subscriptions = new HashMap<>();
 
         // collect all the owned partitions

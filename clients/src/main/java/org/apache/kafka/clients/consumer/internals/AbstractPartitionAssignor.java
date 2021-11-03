@@ -49,15 +49,17 @@ public abstract class AbstractPartitionAssignor implements ConsumerPartitionAssi
 
     @Override
     public GroupAssignment assign(Cluster metadata, GroupSubscription groupSubscription) {
+        // 每个分区的订阅信息
         Map<String, Subscription> subscriptions = groupSubscription.groupSubscription();
         Set<String> allSubscribedTopics = new HashSet<>();
         for (Map.Entry<String, Subscription> subscriptionEntry : subscriptions.entrySet())
             allSubscribedTopics.addAll(subscriptionEntry.getValue().topics());
 
-        //
+        // 每个topic的分区数
         Map<String, Integer> partitionsPerTopic = new HashMap<>();
         // 遍历所有订阅的topic
         for (String topic : allSubscribedTopics) {
+            // 获取topic的分区数量
             Integer numPartitions = metadata.partitionCountForTopic(topic);
             if (numPartitions != null && numPartitions > 0)
                 partitionsPerTopic.put(topic, numPartitions);
@@ -69,6 +71,7 @@ public abstract class AbstractPartitionAssignor implements ConsumerPartitionAssi
         Map<String, List<TopicPartition>> rawAssignments = assign(partitionsPerTopic, subscriptions);
 
         // this class maintains no user data, so just wrap the results
+        // 分配结果
         Map<String, Assignment> assignments = new HashMap<>();
         for (Map.Entry<String, List<TopicPartition>> assignmentEntry : rawAssignments.entrySet())
             assignments.put(assignmentEntry.getKey(), new Assignment(assignmentEntry.getValue()));

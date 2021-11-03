@@ -72,10 +72,13 @@ public class RangeAssignor extends AbstractPartitionAssignor {
     }
 
     private Map<String, List<MemberInfo>> consumersPerTopic(Map<String, Subscription> consumerMetadata) {
+        // 每个topic被订阅的consumer列表
         Map<String, List<MemberInfo>> topicToConsumers = new HashMap<>();
+        // 遍历每个consumer
         for (Map.Entry<String, Subscription> subscriptionEntry : consumerMetadata.entrySet()) {
             String consumerId = subscriptionEntry.getKey();
             MemberInfo memberInfo = new MemberInfo(consumerId, subscriptionEntry.getValue().groupInstanceId());
+            // 往topic放入consumer信息
             for (String topic : subscriptionEntry.getValue().topics()) {
                 put(topicToConsumers, topic, memberInfo);
             }
@@ -86,27 +89,42 @@ public class RangeAssignor extends AbstractPartitionAssignor {
     @Override
     public Map<String, List<TopicPartition>> assign(Map<String, Integer> partitionsPerTopic,
                                                     Map<String, Subscription> subscriptions) {
+        //  每个topic被订阅的consumer列表
         Map<String, List<MemberInfo>> consumersPerTopic = consumersPerTopic(subscriptions);
 
+        // 初始化每个consumer的分配分区列表
         Map<String, List<TopicPartition>> assignment = new HashMap<>();
         for (String memberId : subscriptions.keySet())
             assignment.put(memberId, new ArrayList<>());
 
+        // 遍历每个topic
         for (Map.Entry<String, List<MemberInfo>> topicEntry : consumersPerTopic.entrySet()) {
+            // topic，订阅consumer列表
             String topic = topicEntry.getKey();
             List<MemberInfo> consumersForTopic = topicEntry.getValue();
 
+            // topic的分区数
             Integer numPartitionsForTopic = partitionsPerTopic.get(topic);
             if (numPartitionsForTopic == null)
                 continue;
 
             Collections.sort(consumersForTopic);
 
+            // 每个consumer可分到分区数量： 分区数 / consumer数量
             int numPartitionsPerConsumer = numPartitionsForTopic / consumersForTopic.size();
+            // 多出的分区数：分区数 % consumer数量，直接分配到上一个
             int consumersWithExtraPartition = numPartitionsForTopic % consumersForTopic.size();
 
+            // 生成分区对象列表
             List<TopicPartition> partitions = AbstractPartitionAssignor.partitions(topic, numPartitionsForTopic);
+            // 遍历consumer数量
             for (int i = 0, n = consumersForTopic.size(); i < n; i++) {
+                /**
+                 * 就是从0开始，每个consumer可以得到的分区是连续的
+                 * 开始下标：分到分区数量*i + （i与多出的分区数最小值）
+                 * 长度：分到分区数量+ 多出的分区数(最后的)
+                 *
+                 */
                 int start = numPartitionsPerConsumer * i + Math.min(i, consumersWithExtraPartition);
                 int length = numPartitionsPerConsumer + (i + 1 > consumersWithExtraPartition ? 0 : 1);
                 assignment.get(consumersForTopic.get(i).memberId).addAll(partitions.subList(start, start + length));
