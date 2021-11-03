@@ -254,6 +254,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     if (leaderId.isEmpty)
       leaderId = Some(member.memberId)
     members.put(member.memberId, member)
+    // 加入本地的分配策略
     member.supportedProtocols.foreach{ case (protocol, _) => supportedProtocols(protocol) += 1 }
 
     /**
@@ -550,6 +551,10 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     if (members.nonEmpty) {
       // generationId+1
       generationId += 1
+
+      /**
+       * 分配策略
+       */
       protocolName = Some(selectProtocol)
       subscribedTopics = computeSubscribedTopics()
       // 状态变为CompletingRebalance

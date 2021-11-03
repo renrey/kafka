@@ -54,7 +54,9 @@ public abstract class AbstractPartitionAssignor implements ConsumerPartitionAssi
         for (Map.Entry<String, Subscription> subscriptionEntry : subscriptions.entrySet())
             allSubscribedTopics.addAll(subscriptionEntry.getValue().topics());
 
+        //
         Map<String, Integer> partitionsPerTopic = new HashMap<>();
+        // 遍历所有订阅的topic
         for (String topic : allSubscribedTopics) {
             Integer numPartitions = metadata.partitionCountForTopic(topic);
             if (numPartitions != null && numPartitions > 0)
@@ -63,6 +65,7 @@ public abstract class AbstractPartitionAssignor implements ConsumerPartitionAssi
                 log.debug("Skipping assignment for topic {} since no metadata is available", topic);
         }
 
+        // 分配
         Map<String, List<TopicPartition>> rawAssignments = assign(partitionsPerTopic, subscriptions);
 
         // this class maintains no user data, so just wrap the results

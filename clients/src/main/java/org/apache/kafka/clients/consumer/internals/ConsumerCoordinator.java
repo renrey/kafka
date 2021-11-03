@@ -628,6 +628,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
     protected Map<String, ByteBuffer> performAssignment(String leaderId,
                                                         String assignmentStrategy,
                                                         List<JoinGroupResponseData.JoinGroupResponseMember> allSubscriptions) {
+        // 1. 获取assignor
         ConsumerPartitionAssignor assignor = lookupAssignor(assignmentStrategy);
         if (assignor == null)
             throw new IllegalStateException("Coordinator selected invalid assignment protocol: " + assignmentStrategy);
@@ -638,10 +639,16 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         // collect all the owned partitions
         Map<String, List<TopicPartition>> ownedPartitions = new HashMap<>();
 
+        /**
+         * 遍历成员信息
+         * 从metadata获取到consumer的订阅信息
+         */
         for (JoinGroupResponseData.JoinGroupResponseMember memberSubscription : allSubscriptions) {
             Subscription subscription = ConsumerProtocol.deserializeSubscription(ByteBuffer.wrap(memberSubscription.metadata()));
             subscription.setGroupInstanceId(Optional.ofNullable(memberSubscription.groupInstanceId()));
+            // 成员订阅
             subscriptions.put(memberSubscription.memberId(), subscription);
+            // 所有需要订阅的topic
             allSubscribedTopics.addAll(subscription.topics());
             ownedPartitions.put(memberSubscription.memberId(), subscription.ownedPartitions());
         }
@@ -654,6 +661,9 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
         log.debug("Performing assignment using strategy {} with subscriptions {}", assignor.name(), subscriptions);
 
+        /**
+         * 2.执行分配
+         */
         Map<String, Assignment> assignments = assignor.assign(metadata.fetch(), new GroupSubscription(subscriptions)).groupAssignment();
 
         if (protocol == RebalanceProtocol.COOPERATIVE) {

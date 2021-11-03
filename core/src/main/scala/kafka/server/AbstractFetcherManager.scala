@@ -103,7 +103,7 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
     lock synchronized {
       /**
        * 分区的fetcher寻址：
-       * (31 * topic的hash + 分区下标) % fetcher数量
+       * (31 * topic的hash + 分区下标) % fetcher数量(num.replica.fetchers)
        */
       Utils.abs(31 * topicPartition.topic.hashCode() + topicPartition.partition) % numFetchersPerBroker
     }
