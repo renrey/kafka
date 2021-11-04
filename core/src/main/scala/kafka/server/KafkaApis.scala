@@ -483,6 +483,7 @@ class KafkaApis(val requestChannel: RequestChannel,
               else {
                 /**
                  * 存储到zk
+                 * /consumers/${group}/offsets/${topic}/${partition}
                  */
                 zkSupport.zkClient.setOrCreateConsumerOffset(
                   offsetCommitRequest.data.groupId,

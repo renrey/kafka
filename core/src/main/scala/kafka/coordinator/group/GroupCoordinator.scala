@@ -565,6 +565,7 @@ class GroupCoordinator(val brokerId: Int,
                     removeHeartbeatForLeavingMember(group, member)
                     info(s"Member[group.instance.id ${member.groupInstanceId}, member.id ${member.memberId}] " +
                       s"in group ${group.groupId} has left, removing it from the group")
+                    // 正常处理，进行rebalance
                     removeMemberAndUpdateGroup(group, member, s"removing member $memberId on LeaveGroup")
                     memberLeaveError(leavingMember, Errors.NONE)
                   }
@@ -1435,6 +1436,7 @@ class GroupCoordinator(val brokerId: Int,
       } else if (!group.has(memberId)) {
         debug(s"Member $memberId has already been removed from the group.")
       } else {
+        // 这里进行rebalance
         val member = group.get(memberId)
         if (!member.hasSatisfiedHeartbeat) {
           info(s"Member ${member.memberId} in group ${group.groupId} has failed, removing it from the group")

@@ -1127,6 +1127,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
             if (future.failed() && !future.isRetriable())
                 throw future.exception();
 
+            // 等待100ms
             timer.sleep(rebalanceConfig.retryBackoffMs);
         } while (timer.notExpired());
 
