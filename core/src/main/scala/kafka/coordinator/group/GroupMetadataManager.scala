@@ -61,6 +61,7 @@ class GroupMetadataManager(brokerId: Int,
 
   private val compressionType: CompressionType = CompressionType.forId(config.offsetsTopicCompressionCodec.codec)
 
+  // 每个组的元数据
   private val groupMetadataCache = new Pool[String, GroupMetadata]
 
   /* lock protecting access to loading and owned partition sets */
@@ -552,6 +553,7 @@ class GroupMetadataManager(brokerId: Int,
               topicPartition -> new PartitionData(OffsetFetchResponse.INVALID_OFFSET,
                 Optional.empty(), "", Errors.UNSTABLE_OFFSET_COMMIT)
             } else {
+              // 获取offset
               val partitionData = group.offset(topicPartition) match {
                 case None =>
                   new PartitionData(OffsetFetchResponse.INVALID_OFFSET,
@@ -575,6 +577,10 @@ class GroupMetadataManager(brokerId: Int,
     val topicPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, offsetsPartition)
     info(s"Scheduling loading of offsets and group metadata from $topicPartition for epoch $coordinatorEpoch")
     val startTimeMs = time.milliseconds()
+
+    /**
+     * 提交loadGroupsAndOffsets执行恢复
+     */
     scheduler.schedule(topicPartition.toString, () => loadGroupsAndOffsets(topicPartition, coordinatorEpoch, onGroupLoaded, startTimeMs))
   }
 
@@ -593,6 +599,7 @@ class GroupMetadataManager(brokerId: Int,
       try {
         val schedulerTimeMs = time.milliseconds() - startTimeMs
         debug(s"Started loading offsets and group metadata from $topicPartition for epoch $coordinatorEpoch")
+        // 执行加载
         doLoadGroupsAndOffsets(topicPartition, onGroupLoaded)
         val endTimeMs = time.milliseconds()
         val totalLoadingTimeMs = endTimeMs - startTimeMs
@@ -614,6 +621,7 @@ class GroupMetadataManager(brokerId: Int,
   private def doLoadGroupsAndOffsets(topicPartition: TopicPartition, onGroupLoaded: GroupMetadata => Unit): Unit = {
     def logEndOffset: Long = replicaManager.getLogEndOffset(topicPartition).getOrElse(-1L)
 
+    // 获取分区的log
     replicaManager.getLog(topicPartition) match {
       case None =>
         warn(s"Attempted to load offsets and group metadata from $topicPartition, but found no log")
@@ -633,7 +641,13 @@ class GroupMetadataManager(brokerId: Int,
         // loop breaks if no records have been read, since the end of the log has been reached
         var readAtLeastOneRecord = true
 
+        /**
+         * 从logStartOffset开始读取，5m大小，一直执行直到LEO（最后）
+         */
         while (currOffset < logEndOffset && readAtLeastOneRecord && !shuttingDown.get()) {
+          /**
+           * 读取，默认读5m
+           */
           val fetchDataInfo = log.read(currOffset,
             maxLength = config.loadBufferSize,
             isolation = FetchLogEnd,
@@ -641,6 +655,7 @@ class GroupMetadataManager(brokerId: Int,
 
           readAtLeastOneRecord = fetchDataInfo.records.sizeInBytes > 0
 
+          // 返回内容
           val memRecords = (fetchDataInfo.records: @unchecked) match {
             case records: MemoryRecords => records
             case fileRecords: FileRecords =>
@@ -662,6 +677,7 @@ class GroupMetadataManager(brokerId: Int,
               MemoryRecords.readableRecords(buffer)
           }
 
+          // 遍历内容的每个batch
           memRecords.batches.forEach { batch =>
             val isTxnOffsetCommit = batch.isTransactional
             if (batch.isControlBatch) {
@@ -680,13 +696,17 @@ class GroupMetadataManager(brokerId: Int,
                 pendingOffsets.remove(batch.producerId)
               }
             } else {
+              // 一般的
               var batchBaseOffset: Option[Long] = None
+              // 遍历batch每个记录
               for (record <- batch.asScala) {
                 require(record.hasKey, "Group metadata/offset entry key should not be null")
                 if (batchBaseOffset.isEmpty)
                   batchBaseOffset = Some(record.offset)
-                GroupMetadataManager.readMessageKey(record.key) match {
 
+                // 判断消息key
+                GroupMetadataManager.readMessageKey(record.key) match {
+                  // 消费offset
                   case offsetKey: OffsetKey =>
                     if (isTxnOffsetCommit && !pendingOffsets.contains(batch.producerId))
                       pendingOffsets.put(batch.producerId, mutable.Map[GroupTopicPartition, CommitRecordMetadataAndOffset]())
@@ -705,7 +725,7 @@ class GroupMetadataManager(brokerId: Int,
                       else
                         loadedOffsets.put(groupTopicPartition, CommitRecordMetadataAndOffset(batchBaseOffset, offsetAndMetadata))
                     }
-
+                  // 成员相关
                   case groupMetadataKey: GroupMetadataKey =>
                     // load group metadata
                     val groupId = groupMetadataKey.key
@@ -750,6 +770,7 @@ class GroupMetadataManager(brokerId: Int,
         val (pendingGroupOffsets, pendingEmptyGroupOffsets) = pendingOffsetsByGroup
           .partition { case (group, _) => loadedGroups.contains(group)}
 
+        // 保存到本地缓存中
         loadedGroups.values.foreach { group =>
           val offsets = groupOffsets.getOrElse(group.groupId, Map.empty[TopicPartition, CommitRecordMetadataAndOffset])
           val pendingOffsets = pendingGroupOffsets.getOrElse(group.groupId, Map.empty[Long, mutable.Map[TopicPartition, CommitRecordMetadataAndOffset]])
@@ -866,6 +887,7 @@ class GroupMetadataManager(brokerId: Int,
   private[group] def cleanupGroupMetadata(): Unit = {
     val currentTimestamp = time.milliseconds()
     val numOffsetsRemoved = cleanupGroupMetadata(groupMetadataCache.values, group => {
+      // 清理过去offset
       group.removeExpiredOffsets(currentTimestamp, config.offsetsRetentionMs)
     })
     offsetExpiredSensor.record(numOffsetsRemoved)
@@ -883,17 +905,22 @@ class GroupMetadataManager(brokerId: Int,
   def cleanupGroupMetadata(groups: Iterable[GroupMetadata], selector: GroupMetadata => Map[TopicPartition, OffsetAndMetadata]): Int = {
     var offsetsRemoved = 0
 
+    // 遍历每个组
     groups.foreach { group =>
       val groupId = group.groupId
       val (removedOffsets, groupIsDead, generation) = group.inLock {
+        // 执行清理过期offset
         val removedOffsets = selector(group)
+        // 组里没有成员，且没有offset记录
         if (group.is(Empty) && !group.hasOffsets) {
           info(s"Group $groupId transitioned to Dead in generation ${group.generationId}")
+          // 直接转换Dead
           group.transitionTo(Dead)
         }
         (removedOffsets, group.is(Dead), group.generationId)
       }
 
+    // 这个组所属的分区
     val offsetsPartition = partitionFor(groupId)
     val appendPartition = new TopicPartition(Topic.GROUP_METADATA_TOPIC_NAME, offsetsPartition)
     getMagic(offsetsPartition) match {
@@ -904,6 +931,7 @@ class GroupMetadataManager(brokerId: Int,
 
           replicaManager.onlinePartition(appendPartition).foreach { partition =>
             val tombstones = ArrayBuffer.empty[SimpleRecord]
+            // 被清除的offset会生成record消息
             removedOffsets.forKeyValue { (topicPartition, offsetAndMetadata) =>
               trace(s"Removing expired/deleted offset and metadata for $groupId, $topicPartition: $offsetAndMetadata")
               val commitKey = GroupMetadataManager.offsetCommitKey(groupId, topicPartition)
@@ -913,6 +941,9 @@ class GroupMetadataManager(brokerId: Int,
 
             // We avoid writing the tombstone when the generationId is 0, since this group is only using
             // Kafka for offset storage.
+            /**
+             * 如果组变成dead，从本地缓存移除，生成消息（对象是空的）
+             */
             if (groupIsDead && groupMetadataCache.remove(groupId, group) && generation > 0) {
               // Append the tombstone messages to the partition. It is okay if the replicas don't receive these (say,
               // if we crash or leaders move) since the new leaders will still expire the consumers with heartbeat and
@@ -926,6 +957,9 @@ class GroupMetadataManager(brokerId: Int,
               try {
                 // do not need to require acks since even if the tombstone is lost,
                 // it will be appended again in the next purge cycle
+                /**
+                 * 把刚刚删除相关的消息，写入分区log
+                 */
                 val records = MemoryRecords.withRecords(magicValue, 0L, compressionType, timestampType, tombstones.toArray: _*)
                 partition.appendRecordsToLeader(records, origin = AppendOrigin.Coordinator, requiredAcks = 0)
 

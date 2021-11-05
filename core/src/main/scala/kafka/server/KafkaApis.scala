@@ -271,6 +271,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     } else {
       /**
        * leader或follower处理，更新ISR、分配列表
+       * onLeadershipChange: 会进行__consumer__topic的内部初始化__
        */
       val response = replicaManager.becomeLeaderOrFollower(correlationId, leaderAndIsrRequest,
         RequestHandlerHelper.onLeadershipChange(groupCoordinator, txnCoordinator, _, _))

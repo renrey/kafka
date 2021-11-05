@@ -43,6 +43,7 @@ object RequestHandlerHelper {
     // this callback is invoked under the replica state change lock to ensure proper order of
     // leadership changes
     updatedLeaders.foreach { partition =>
+      // __consumer_offsets的leader处理
       if (partition.topic == Topic.GROUP_METADATA_TOPIC_NAME)
         groupCoordinator.onElection(partition.partitionId, partition.getLeaderEpoch)
       else if (partition.topic == Topic.TRANSACTION_STATE_TOPIC_NAME)

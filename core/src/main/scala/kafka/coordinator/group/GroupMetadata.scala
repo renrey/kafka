@@ -731,8 +731,12 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
 
   def removeExpiredOffsets(currentTimestamp: Long, offsetRetentionMs: Long): Map[TopicPartition, OffsetAndMetadata] = {
 
+    // 获取过期offset
     def getExpiredOffsets(baseTimestamp: CommitRecordMetadataAndOffset => Long,
                           subscribedTopics: Set[String] = Set.empty): Map[TopicPartition, OffsetAndMetadata] = {
+      /**
+       * 分区的topic不是当前订阅的topic, 且写入时间超过1天
+       */
       offsets.filter {
         case (topicPartition, commitRecordMetadataAndOffset) =>
           !subscribedTopics.contains(topicPartition.topic()) &&
@@ -786,6 +790,7 @@ private[group] class GroupMetadata(val groupId: String, initialState: GroupState
     if (expiredOffsets.nonEmpty)
       debug(s"Expired offsets from group '$groupId': ${expiredOffsets.keySet}")
 
+    // 把过期的从offset中删掉
     offsets --= expiredOffsets.keySet
     expiredOffsets
   }

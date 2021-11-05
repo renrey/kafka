@@ -344,6 +344,7 @@ public abstract class AbstractCoordinator implements Closeable {
             if (heartbeat.shouldHeartbeat(now)) {
                 notify();
             }
+            // 更新poll
             heartbeat.poll(now);
         }
     }
