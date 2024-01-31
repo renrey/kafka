@@ -187,6 +187,7 @@ class GroupCoordinator(val brokerId: Int,
       sessionTimeoutMs > groupConfig.groupMaxSessionTimeoutMs) {
       responseCallback(JoinGroupResult(memberId, Errors.INVALID_SESSION_TIMEOUT))
     } else {
+      // 初始
       val isUnknownMember = memberId == JoinGroupRequest.UNKNOWN_MEMBER_ID
       // group is created if it does not exist and the member id is UNKNOWN. if member
       // is specified but group does not exist, request is rejected with UNKNOWN_MEMBER_ID
@@ -195,6 +196,7 @@ class GroupCoordinator(val brokerId: Int,
        */
       groupManager.getOrMaybeCreateGroup(groupId, isUnknownMember) match {
         case None =>
+          // 应该已存在实际没有
           responseCallback(JoinGroupResult(memberId, Errors.UNKNOWN_MEMBER_ID))
         // 正常
         case Some(group) =>
@@ -208,9 +210,11 @@ class GroupCoordinator(val brokerId: Int,
               /**
                * 2. 刚发起时，没有memberId执行, 加入到group中
                * 这个过程会进行rebalance
+               * 等于这里是先申请memberId
                */
               doUnknownJoinGroup(group, groupInstanceId, requireKnownMemberId, clientId, clientHost, rebalanceTimeoutMs, sessionTimeoutMs, protocolType, protocols, responseCallback)
             } else {
+              // 正常
               doJoinGroup(group, memberId, groupInstanceId, clientId, clientHost, rebalanceTimeoutMs, sessionTimeoutMs, protocolType, protocols, responseCallback)
             }
 
@@ -453,6 +457,8 @@ class GroupCoordinator(val brokerId: Int,
             /**
              * 1. 给对应的consumer设置awaitingSyncCallback回调(就是发送响应)，此时对应的状态为"awaitingSync（等待sync）"
              * 类似awaitingJoin，需要等到这个对应过程完成才会调用这个回调返回响应
+             *就是该消费者在等待sync响应，这里是对应的节点返回操作函数
+             * 非follower，这里处理完就完了，当接收并处理完leader的分配，就调用这函数发送响应
              */
             group.get(memberId).awaitingSyncCallback = responseCallback
 
@@ -468,6 +474,7 @@ class GroupCoordinator(val brokerId: Int,
               // 分配中没有的consumer
               val missing = group.allMembers.diff(groupAssignment.keySet)
               // 把分配中没有consumer也加入分配中
+              // 等于有每个消费者key，但不一定都有被分配到分区
               val assignment = groupAssignment ++ missing.map(_ -> Array.empty[Byte]).toMap
 
               if (missing.nonEmpty) {
@@ -495,6 +502,7 @@ class GroupCoordinator(val brokerId: Int,
                        * 3)group状态 -> Stable
                        */
                       // 更新本地每个consumer分配到的消费分区缓存、响应给每个consumer自己分配到的分区
+                      // 如果follower已经发送sync请求等待响应，这里会触发发送，即上面加入的awaitingSyncCallback
                       setAndPropagateAssignment(group, assignment)
                       // 状态：Stable(已有分配方案)
                       group.transitionTo(Stable)
@@ -511,6 +519,7 @@ class GroupCoordinator(val brokerId: Int,
             // if the group is stable, we just return the current assignment
             val memberMetadata = group.get(memberId)
             responseCallback(SyncGroupResult(group.protocolType, group.protocolName, memberMetadata.assignment, Errors.NONE))
+            //
             completeAndScheduleNextHeartbeatExpiration(group, group.get(memberId))
 
           case Dead =>
@@ -722,6 +731,7 @@ class GroupCoordinator(val brokerId: Int,
                 completeAndScheduleNextHeartbeatExpiration(group, member)
                 responseCallback(Errors.REBALANCE_IN_PROGRESS)
 
+             // stable是正常
             case Stable =>
                 val member = group.get(memberId)
                 completeAndScheduleNextHeartbeatExpiration(group, member)
@@ -1057,10 +1067,12 @@ class GroupCoordinator(val brokerId: Int,
 
     // complete current heartbeat expectation
     member.heartbeatSatisfied = true
+    // 1。 完成上次心跳
     heartbeatPurgatory.checkAndComplete(memberKey)
 
     // reschedule the next heartbeat expiration deadline
     member.heartbeatSatisfied = false
+    // 2。新增新的心跳任务
     val delayedHeartbeat = new DelayedHeartbeat(this, group, member.memberId, isPending = false, timeoutMs)
     heartbeatPurgatory.tryCompleteElseWatch(delayedHeartbeat, Seq(memberKey))
   }
@@ -1298,6 +1310,7 @@ class GroupCoordinator(val brokerId: Int,
 
   def tryCompleteJoin(group: GroupMetadata, forceComplete: () => Boolean) = {
     group.inLock {
+      // 全部都发送join请求
       if (group.hasAllMembersJoined)
         forceComplete()
       else false

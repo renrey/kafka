@@ -72,6 +72,7 @@ abstract class ReplicaStateMachine(controllerContext: ControllerContext) extends
          * 放入上下文的replicaStates中，key-分区、brokerId, v-上线or删除
          */
         val partitionAndReplica = PartitionAndReplica(partition, replicaId)
+        // 分区在这个broker正常
         if (controllerContext.isReplicaOnline(replicaId, partition)) {
           controllerContext.putReplicaState(partitionAndReplica, OnlineReplica)
         } else {
@@ -125,6 +126,8 @@ class ZkReplicaStateMachine(config: KafkaConfig,
           doHandleStateChanges(replicaId, replicas, targetState)
         }
         // 给broker发送controller的epoch(/controller_epoch)
+        // 发送请求，例如LeaderAndIsrRequest，UpdateMetadata（都是分区信息相关）
+        // 其实就是同步分区状态等元数据给其他broker（controller职责）
         controllerBrokerRequestBatch.sendRequestsToBrokers(controllerContext.epoch)
       } catch {
         case e: ControllerMovedException =>
@@ -221,7 +224,8 @@ class ZkReplicaStateMachine(config: KafkaConfig,
               }
             // 启动是这里
             case _ =>
-              // 如果当前分区已有leader，给当前broker发送leader信息
+              // 如果当前分区已有leader，生成对这个broker（follower）的LeaderAndIsrRequest，后面需要发送
+              // 生成对应请求，后面同步给broker
               controllerContext.partitionLeadershipInfo(partition) match {
                 case Some(leaderIsrAndControllerEpoch) =>
                   controllerBrokerRequestBatch.addLeaderAndIsrRequestForBrokers(Seq(replicaId),
@@ -250,6 +254,7 @@ class ZkReplicaStateMachine(config: KafkaConfig,
         updatedLeaderIsrAndControllerEpochs.forKeyValue { (partition, leaderIsrAndControllerEpoch) =>
           stateLogger.info(s"Partition $partition state changed to $leaderIsrAndControllerEpoch after removing replica $replicaId from the ISR as part of transition to $OfflineReplica")
           if (!controllerContext.isTopicQueuedUpForDeletion(partition.topic)) {
+            // 同一个分区分配的其他broker
             val recipients = controllerContext.partitionReplicaAssignment(partition).filterNot(_ == replicaId)
             /**
              * 1. 发送这个的分区isr列表给分配到的broker, LEADER_AND_ISR

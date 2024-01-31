@@ -744,7 +744,8 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(
                     config.getList(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG), config.getString(ConsumerConfig.CLIENT_DNS_LOOKUP_CONFIG));
             // 启动，保存地址
-            this.metadata.bootstrap(addresses);
+			// 从配置中生成集群node地址，并更新标志让io客户端更新元数据请求
+			this.metadata.bootstrap(addresses);
             String metricGrpPrefix = "consumer";
 
             FetcherMetricsRegistry metricsRegistry = new FetcherMetricsRegistry(Collections.singleton(CLIENT_ID_METRIC_TAG), metricGrpPrefix);
@@ -1355,7 +1356,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
         // send any new fetches (won't resend pending fetches)
 		/**
-		 * 发送fetch请求
+		 * fetcher目前无数据，发送fetch请求
 		 */
         fetcher.sendFetches();
 
@@ -1372,13 +1373,16 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
 
         Timer pollTimer = time.timer(pollTimeout);
         // poll
+		/**
+		 * networkclient 的poll阻塞等待
+		 */
         client.poll(pollTimer, () -> {
             // since a fetch might be completed by the background thread, we need this poll condition
             // to ensure that we do not block unnecessarily in poll()
 			// 当前没有可进行fetch请求的分区（非pause、position是FETCHING），会一直堵塞
             return !fetcher.hasAvailableFetches();
         });
-        timer.update(pollTimer.currentTimeMs());
+        timer.update(pollTimer.currentTimeMs());// 定时器更新时间
 
 		/**
 		 * 返回当前已完成请求的返回的消息（上限500条）

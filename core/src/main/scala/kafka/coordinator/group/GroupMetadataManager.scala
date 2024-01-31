@@ -332,7 +332,7 @@ class GroupMetadataManager(brokerId: Int,
         }
 
         /**
-         * 2. 把record写入到对应的分区log
+         * 2. 把record写入到对应的分区replica 中（即写入topic）
          */
         appendForGroup(group, groupMetadataRecords, putCacheCallback)
 

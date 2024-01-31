@@ -157,7 +157,7 @@ abstract class AbstractFetcherManager[T <: AbstractFetcherThread](val name: Stri
         }
 
         /**
-         * 往fetcher添加多个分区的InitialFetchState
+         * 往fetcher添加多个分区的InitialFetchState!!关键
          */
         addPartitionsToFetcherThread(fetcherThread, initialFetchOffsets)
       }

@@ -160,6 +160,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
        */
       val response = retryRequestUntilConnected(
         MultiRequest(Seq(
+          // 创建临时节点
           CreateOp(ControllerZNode.path, ControllerZNode.encode(controllerId, timestamp), defaultAcls(ControllerZNode.path), CreateMode.EPHEMERAL),
           SetDataOp(ControllerEpochZNode.path, ControllerEpochZNode.encode(newControllerEpoch), expectedControllerEpochZkVersion)))
       )
@@ -499,6 +500,7 @@ class KafkaZkClient private[zk] (zooKeeperClient: ZooKeeperClient, isSecure: Boo
    * @return sequence of topics in the cluster.
    */
   def getAllTopicsInCluster(registerWatch: Boolean = false): Set[String] = {
+    // 获取已分配的topic，/brokers/topics/${topic}
     val getChildrenResponse = retryRequestUntilConnected(
       GetChildrenRequest(TopicsZNode.path, registerWatch))
     getChildrenResponse.resultCode match {

@@ -1441,6 +1441,7 @@ class KafkaApis(val requestChannel: RequestChannel,
 
       // 获取对应的topic信息
       val topicMetadata = metadataCache.getTopicMetadata(Set(internalTopicName), request.context.listenerName)
+      // 响应
       def createFindCoordinatorResponse(error: Errors,
                                         node: Node,
                                         requestThrottleMs: Int): FindCoordinatorResponse = {
@@ -1583,8 +1584,11 @@ class KafkaApis(val requestChannel: RequestChannel,
   def handleJoinGroupRequest(request: RequestChannel.Request): Unit = {
     val joinGroupRequest = request.body[JoinGroupRequest]
 
+
+    // 这里发送响应的操作
     // the callback for sending a join-group response
     def sendResponseCallback(joinResult: JoinGroupResult): Unit = {
+      // 创建响应对象
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val protocolName = if (request.context.apiVersion() >= 7)
           joinResult.protocolName.orNull
@@ -1828,6 +1832,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     val zkSupport = metadataSupport.requireZkOrThrow(KafkaApis.shouldAlwaysForward(request))
     val controllerMutationQuota = quotas.controllerMutation.newQuotaFor(request, strictSinceVersion = 6)
 
+    // 发送响应的操作函数
     def sendResponseCallback(results: CreatableTopicResultCollection): Unit = {
       def createResponse(requestThrottleMs: Int): AbstractResponse = {
         val responseData = new CreateTopicsResponseData()
@@ -1843,13 +1848,17 @@ class KafkaApis(val requestChannel: RequestChannel,
 
     val createTopicsRequest = request.body[CreateTopicsRequest]
     val results = new CreatableTopicResultCollection(createTopicsRequest.data.topics.size)
+    // controller不是当前节点
     if (!zkSupport.controller.isActive) {
       createTopicsRequest.data.topics.forEach { topic =>
         results.add(new CreatableTopicResult().setName(topic.name)
           .setErrorCode(Errors.NOT_CONTROLLER.code))
       }
+      // 响应
       sendResponseCallback(results)
+   // 正常继续
     } else {
+      // 从请求获取topic
       createTopicsRequest.data.topics.forEach { topic =>
         results.add(new CreatableTopicResult().setName(topic.name))
       }
@@ -1874,6 +1883,8 @@ class KafkaApis(val requestChannel: RequestChannel,
           topic.setTopicConfigErrorCode(Errors.TOPIC_AUTHORIZATION_FAILED.code)
         }
       }
+
+      // 待创建的topic
       val toCreate = mutable.Map[String, CreatableTopic]()
       createTopicsRequest.data.topics.forEach { topic =>
         if (results.find(topic.name).errorCode == Errors.NONE.code) {
@@ -1895,6 +1906,10 @@ class KafkaApis(val requestChannel: RequestChannel,
         }
         sendResponseCallback(results)
       }
+
+      /**
+       * zk创建topic元数据
+       */
       zkSupport.adminManager.createTopics(
         createTopicsRequest.data.timeoutMs,
         createTopicsRequest.data.validateOnly,

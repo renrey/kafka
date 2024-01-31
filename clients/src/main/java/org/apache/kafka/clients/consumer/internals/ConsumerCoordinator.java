@@ -207,7 +207,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
         }
 
         /**
-         * 拉取元数据
+         * 触发拉取元数据
          */
         this.metadata.requestUpdate();
     }
@@ -532,7 +532,7 @@ public final class ConsumerCoordinator extends AbstractCoordinator {
 
             /**
              * 如果不知道coordinator, 进行寻找coordinator！！！
-             * ensureCoordinatorReady: 确保coordinator可用
+             * ensureCoordinatorReady: 确保coordinator可用== 像broker请求获取Coordinator节点，并发起连接
              */
             if (coordinatorUnknown() && !ensureCoordinatorReady(timer)) {
                 return false;

@@ -376,15 +376,17 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
                                        isNew: Boolean): Unit = {
 
     brokerIds.filter(_ >= 0).foreach { brokerId =>
-      // LEADER_AND_ISR请求的map
+      // LEADER_AND_ISR请求的map, 下次需要发送的LEADER_AND_ISR请求
+      // 不存在这个broker的，则往里面新建
       val result = leaderAndIsrRequestMap.getOrElseUpdate(brokerId, mutable.Map.empty)
       val alreadyNew = result.get(topicPartition).exists(_.isNew)
       val leaderAndIsr = leaderIsrAndControllerEpoch.leaderAndIsr
+      // 更新对应leaderAndIsrRequestMap中对应broker的map
       result.put(topicPartition, new LeaderAndIsrPartitionState()
         .setTopicName(topicPartition.topic)
         .setPartitionIndex(topicPartition.partition) // 分区
         .setControllerEpoch(leaderIsrAndControllerEpoch.controllerEpoch)
-        .setLeader(leaderAndIsr.leader) // leader
+        .setLeader(leaderAndIsr.leader) // leader编号
         .setLeaderEpoch(leaderAndIsr.leaderEpoch)
         .setIsr(leaderAndIsr.isr.map(Integer.valueOf).asJava)
         .setZkVersion(leaderAndIsr.zkVersion)
@@ -434,6 +436,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
             if (beingDeleted) LeaderAndIsr.duringDelete(leaderAndIsr.isr)
             else leaderAndIsr
 
+          // 放入分区信息
           val partitionStateInfo = new UpdateMetadataPartitionState()
             .setTopicName(partition.topic)
             .setPartitionIndex(partition.partition)
@@ -451,7 +454,9 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
       }
     }
 
+    // 加入到需求发送 updateMetadataRequest的目标broker
     updateMetadataRequestBrokerSet ++= brokerIds.filter(_ >= 0)
+    // 遍历分区
     partitions.foreach(partition => updateMetadataRequestPartitionInfo(partition,
       beingDeleted = controllerContext.topicsToBeDeleted.contains(partition.topic)))
   }
@@ -471,14 +476,17 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
         var numBecomeLeaders = 0
         leaderAndIsrPartitionStates.forKeyValue { (topicPartition, state) =>
           leaderIds += state.leader
+          // 根据分区leader，与目标broker，来生成leader、follow请求
           val typeOfRequest = if (broker == state.leader) {
             numBecomeLeaders += 1
             "become-leader"
           } else {
             "become-follower"
           }
-          if (stateChangeLog.isTraceEnabled)
+          if (stateChangeLog.isTraceEnabled) {
+            // type只是日志
             stateChangeLog.trace(s"Sending $typeOfRequest LeaderAndIsr request $state to broker $broker for partition $topicPartition")
+          }
         }
         stateChangeLog.info(s"Sending LeaderAndIsr request to broker $broker with $numBecomeLeaders become-leader " +
           s"and ${leaderAndIsrPartitionStates.size - numBecomeLeaders} become-follower partitions")
@@ -493,6 +501,7 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
           .toMap
         val leaderAndIsrRequestBuilder = new LeaderAndIsrRequest.Builder(leaderAndIsrRequestVersion, controllerId,
           controllerEpoch, brokerEpoch, leaderAndIsrPartitionStates.values.toBuffer.asJava, topicIds.asJava, leaders.asJava)
+        // 执行发送
         sendRequest(broker, leaderAndIsrRequestBuilder, (r: AbstractResponse) => {
           val leaderAndIsrResponse = r.asInstanceOf[LeaderAndIsrResponse]
           sendEvent(LeaderAndIsrResponseReceived(leaderAndIsrResponse, broker))
@@ -549,8 +558,12 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
         .distinct
         .filter(controllerContext.topicIds.contains)
         .map(topic => (topic, controllerContext.topicIds(topic))).toMap
+      /**
+       * 需要更新分区元数据
+       */
       val updateMetadataRequestBuilder = new UpdateMetadataRequest.Builder(updateMetadataRequestVersion,
         controllerId, controllerEpoch, brokerEpoch, partitionStates.asJava, liveBrokers.asJava, topicIds.asJava)
+      // 发送
       sendRequest(broker, updateMetadataRequestBuilder, (r: AbstractResponse) => {
         val updateMetadataResponse = r.asInstanceOf[UpdateMetadataResponse]
         sendEvent(UpdateMetadataResponseReceived(updateMetadataResponse, broker))
@@ -655,8 +668,8 @@ abstract class AbstractControllerBrokerRequestBatch(config: KafkaConfig,
   def sendRequestsToBrokers(controllerEpoch: Int): Unit = {
     try {
       val stateChangeLog = stateChangeLogger.withControllerEpoch(controllerEpoch)
-      sendLeaderAndIsrRequest(controllerEpoch, stateChangeLog)
-      sendUpdateMetadataRequests(controllerEpoch, stateChangeLog)
+      sendLeaderAndIsrRequest(controllerEpoch, stateChangeLog) // 发送分区leaderAndIsr信息给broker
+      sendUpdateMetadataRequests(controllerEpoch, stateChangeLog)// 发送（单一）分区状态给broker
       sendStopReplicaRequests(controllerEpoch, stateChangeLog)
     } catch {
       case e: Throwable =>

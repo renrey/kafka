@@ -55,7 +55,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
                   topicConfig: Properties = new Properties,
                   rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
                   usesTopicId: Boolean = false): Unit = {
-    // 1. 获取现有所有的broker
+    // 1. 获取现有所有的broker元数据
     val brokerMetadatas = getBrokerMetadatas(rackAwareMode)
     // 2. 生成分配方案
     val replicaAssignment = AdminUtils.assignReplicasToBrokers(brokerMetadatas, partitions, replicationFactor)
@@ -72,20 +72,24 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
   def getBrokerMetadatas(rackAwareMode: RackAwareMode = RackAwareMode.Enforced,
                          brokerList: Option[Seq[Int]] = None): Seq[BrokerMetadata] = {
     // 1. 从zk获取所有broker信息（每个znode的data）
+    // path:/brokers/ids/${id}
     val allBrokers = zkClient.getAllBrokersInCluster
-    val brokers = brokerList.map(brokerIds => allBrokers.filter(b => brokerIds.contains(b.id))).getOrElse(allBrokers)
-    val brokersWithRack = brokers.filter(_.rack.nonEmpty)
+    val brokers = brokerList.map(brokerIds => allBrokers.filter(b => brokerIds.contains(b.id))).getOrElse(allBrokers)// 从现有的broker中符合brokerList的，如果没有，则返回现在的全部
+    val brokersWithRack = brokers.filter(_.rack.nonEmpty)// 生成有rack机架属性的broker
     if (rackAwareMode == RackAwareMode.Enforced && brokersWithRack.nonEmpty && brokersWithRack.size < brokers.size) {
       throw new AdminOperationException("Not all brokers have rack information. Add --disable-rack-aware in command line" +
         " to make replica assignment without rack information.")
     }
     val brokerMetadatas = rackAwareMode match {
+      // 不开启机架感知
       case RackAwareMode.Disabled => brokers.map(broker => BrokerMetadata(broker.id, None))
+      // 安全模式，需要全部broker都有rack才开启
       case RackAwareMode.Safe if brokersWithRack.size < brokers.size =>
         brokers.map(broker => BrokerMetadata(broker.id, None))
-      // 默认
+      // 默认（开启），broker元数据封装都有rac
       case _ => brokers.map(broker => BrokerMetadata(broker.id, broker.rack))
     }
+    // 根据broker.id排序
     brokerMetadatas.sortBy(_.id)
   }
 
@@ -122,7 +126,7 @@ class AdminZkClient(zkClient: KafkaZkClient) extends Logging {
      * path: /brokers/topic/
      */
     // create the partition assignment
-    writeTopicPartitionAssignment(topic, partitionReplicaAssignment.map { case (k, v) => k -> ReplicaAssignment(v) },
+    writeTopicPartitionAssignment(topic, partitionReplicaAssignment.map { case (k, v) => k -> ReplicaAssignment(v) },// 原来broker数组转成用ReplicaAssignment代表
       isUpdate = false, usesTopicId)
   }
 

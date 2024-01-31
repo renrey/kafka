@@ -849,7 +849,8 @@ class LogManager(logDirs: Seq[File],
    */
   def getOrCreateLog(topicPartition: TopicPartition, isNew: Boolean = false, isFuture: Boolean = false): Log = {
     logCreationOrDeletionLock synchronized {
-      // 获取对应分区的log
+      // 获取返回对应分区的log
+      // 没有就下面创建log
       getLog(topicPartition, isFuture).getOrElse {
         /**
          * 没有就进行创建
@@ -898,7 +899,7 @@ class LogManager(logDirs: Seq[File],
           .get // If Failure, will throw
 
         val config = fetchLogConfig(topicPartition.topic)
-        // 创建log对象
+        // 创建log对象！！！
         val log = Log(
           dir = logDir,
           config = config,
@@ -915,7 +916,7 @@ class LogManager(logDirs: Seq[File],
         if (isFuture)
           futureLogs.put(topicPartition, log)
         else
-          currentLogs.put(topicPartition, log)
+          currentLogs.put(topicPartition, log) // 放入到currentLogs缓存冲（kv）
 
         info(s"Created log for partition $topicPartition in $logDir with properties ${config.overriddenConfigsAsLoggableString}")
         // Remove the preferred log dir since it has already been satisfied

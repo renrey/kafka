@@ -751,14 +751,14 @@ class Log(@volatile private var _dir: File,
           warn(s"Found an orphaned index file ${file.getAbsolutePath}, with no corresponding log file.")
           Files.deleteIfExists(file.toPath)
         }
-      // log文件
+      // .log文件
       } else if (isLogFile(file)) {
         // if it's a log file, load the corresponding log segment
         // 从文件名获取baseOffset
         val baseOffset = offsetFromFile(file)
         val timeIndexFileNewlyCreated = !Log.timeIndexFile(dir, baseOffset).exists()
         /**
-         * 构建LogSegment
+         * 构建LogSegment,加载里面的流对象
          */
         val segment = LogSegment.open(dir = dir,
           baseOffset = baseOffset,
@@ -778,6 +778,7 @@ class Log(@volatile private var _dir: File,
             recoverSegment(segment)
         }
         // 加入到本地的map中
+        // 放入到log对象的segments(map)中
         addSegment(segment)
       }
     }
@@ -866,7 +867,7 @@ class Log(@volatile private var _dir: File,
       logSegments.foreach(_.close())
       segments.clear()
       /**
-       * 加载本地的log文件，生成对应的LogSegment
+       * 加载本地的log文件，生成对应的多个LogSegment对象
        */
       loadSegmentFiles()
     }
@@ -884,6 +885,7 @@ class Log(@volatile private var _dir: File,
          * 2. 执行清理操作，如果最后的LEO比logStartOffset小，就把所有的Segment文件删除
          * 3. 会更新recoveryPoint
          */
+        // 恢复
         recoverLog()
       }
 
@@ -1041,6 +1043,7 @@ class Log(@volatile private var _dir: File,
         val logEndOffset = logEndOffsetOption.getOrElse(activeSegment.readNextOffset)
         // recoveryPoint变成recoveryPoint、新的LEO之间最小的
         recoveryPoint = Math.min(recoveryPoint, logEndOffset)
+        // 返回
         logEndOffset
     }
   }
@@ -2401,7 +2404,7 @@ class Log(@volatile private var _dir: File,
         lock synchronized {
           leaderEpochCache.foreach(_.truncateFromEnd(logEndOffset))
         }
-
+        // 所以false，没进行截取
         false
       } else {
         // 截取offset在LEO前面，等于需要截取log

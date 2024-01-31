@@ -35,6 +35,7 @@ private[group] class DelayedJoin(coordinator: GroupCoordinator,
                                  group: GroupMetadata,
                                  rebalanceTimeout: Long) extends DelayedOperation(rebalanceTimeout, Some(group.lock)) {
 
+  // 先通过tryCompleteJoin 校验是否可完成，可完成则强制forceComplete（调用onComplete）
   override def tryComplete(): Boolean = coordinator.tryCompleteJoin(group, forceComplete _)
   override def onExpiration(): Unit = {
     // try to complete delayed actions introduced by coordinator.onCompleteJoin
@@ -75,6 +76,7 @@ private[group] class InitialDelayedJoin(coordinator: GroupCoordinator,
       if (group.newMemberAdded && remainingMs != 0) {
         group.newMemberAdded = false
         val delay = min(configuredRebalanceDelay, remainingMs)
+        // 一只循环直到总共到达6s
         val remaining = max(remainingMs - delayMs, 0)
         /**
          * 其实就继续延时等待其他consumer发送join，一直这样循环，直到过去真实需要等待的时间（configuredRebalanceDelay, 6s）

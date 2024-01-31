@@ -257,6 +257,7 @@ public class Fetcher<K, V> implements Closeable {
          * 主要是封装对broker的FetchSessionHandler，原来没有就要创建
          */
         Map<Node, FetchSessionHandler.FetchRequestData> fetchRequestMap = prepareFetchRequests();
+        // 基于session，遍历每个需要的broker
         for (Map.Entry<Node, FetchSessionHandler.FetchRequestData> entry : fetchRequestMap.entrySet()) {
             final Node fetchTarget = entry.getKey();
             final FetchSessionHandler.FetchRequestData data = entry.getValue();
@@ -272,7 +273,7 @@ public class Fetcher<K, V> implements Closeable {
             log.debug("Sending {} {} to broker {}", isolationLevel, data, fetchTarget);
 
             /**
-             * 提交FetchRequest
+             * 对指定broker提交FetchRequest
              */
             RequestFuture<ClientResponse> future = client.send(fetchTarget, request);
             // We add the node to the set of nodes with pending fetch requests before adding the
@@ -312,6 +313,7 @@ public class Fetcher<K, V> implements Closeable {
                             Set<TopicPartition> partitions = new HashSet<>(response.responseData().keySet());
                             FetchResponseMetricAggregator metricAggregator = new FetchResponseMetricAggregator(sensors, partitions);
 
+                            // 遍历每个分区，结果
                             for (Map.Entry<TopicPartition, FetchResponse.PartitionData<Records>> entry : response.responseData().entrySet()) {
                                 TopicPartition partition = entry.getKey();
                                 FetchRequest.PartitionData requestData = data.sessionPartitions().get(partition);
@@ -332,6 +334,7 @@ public class Fetcher<K, V> implements Closeable {
                                     throw new IllegalStateException(message);
                                 } else {
                                     long fetchOffset = requestData.fetchOffset;
+                                    // 分区结果
                                     FetchResponse.PartitionData<Records> partitionData = entry.getValue();
 
                                     log.debug("Fetch {} at offset {} for partition {} returned fetch data {}",
@@ -341,6 +344,7 @@ public class Fetcher<K, V> implements Closeable {
                                     short responseVersion = resp.requestHeader().apiVersion();
 
                                     /**
+                                     * 这个分取结果包装成CompletedFetch
                                      * 放入到completedFetches队列，在其他地方处理这些消息
                                      */
                                     completedFetches.add(new CompletedFetch(partition, partitionData,
@@ -635,9 +639,12 @@ public class Fetcher<K, V> implements Closeable {
      * @throws TopicAuthorizationException If there is TopicAuthorization error in fetchResponse.
      */
     public Map<TopicPartition, List<ConsumerRecord<K, V>>> fetchedRecords() {
+        // fetch到的，按照分区划分
+        // 本次返回的结果
         Map<TopicPartition, List<ConsumerRecord<K, V>>> fetched = new HashMap<>();
         Queue<CompletedFetch> pausedCompletedFetches = new ArrayDeque<>();
         // 需要遍历的Record消息数量
+        // 还剩下多少记录需要poll，初始值=max.poll
         int recordsRemaining = maxPollRecords;
 
         try {
@@ -647,6 +654,7 @@ public class Fetcher<K, V> implements Closeable {
             while (recordsRemaining > 0) {
                 /**
                  * 当前无nextInLineFetch or 原来的nextInLineFetch已被消费
+                 * 未有正消费or上次消费已完成，从completedFetches取新的
                  */
                 if (nextInLineFetch == null || nextInLineFetch.isConsumed) {
                     // 拿队头的CompletedFetch
@@ -660,6 +668,7 @@ public class Fetcher<K, V> implements Closeable {
                         try {
                             /**
                              * 初始化（校验、更新缓存信息）,并且更新为nextInLineFetch
+                             * 即系解析fetch内容，然后更新nextInLineFetch供下个循环使用
                              */
                             nextInLineFetch = initializeCompletedFetch(records);
                         } catch (Exception e) {
@@ -679,6 +688,7 @@ public class Fetcher<K, V> implements Closeable {
                         nextInLineFetch = records;
                     }
                     // 等于把当前这条completeFetch从队列删掉
+                    // 已消费第一个completeFecth
                     completedFetches.poll();
                 // 已经暂停，手动pause
                 } else if (subscriptions.isPaused(nextInLineFetch.partition)) {
@@ -688,10 +698,11 @@ public class Fetcher<K, V> implements Closeable {
                     // 暂停的, 把nextInLineFetch放入pausedCompletedFetches
                     pausedCompletedFetches.add(nextInLineFetch);
                     nextInLineFetch = null;
+               //    继续消费nextInLineFetch 消息
                 } else {
                     /**
                      * 已有nextInLineFetch
-                     * 从nextInLineFetch解析最多500条消息
+                     * 从nextInLineFetch（最近解析的fetch请求响应）解析最多500条消息
                      */
                     List<ConsumerRecord<K, V>> records = fetchRecords(nextInLineFetch, recordsRemaining);
 
@@ -731,7 +742,7 @@ public class Fetcher<K, V> implements Closeable {
         return fetched;
     }
 
-    private List<ConsumerRecord<K, V>> fetchRecords(CompletedFetch completedFetch, int maxRecords) {
+    private List<ConsumerRecord<K, V>> /**/fetchRecords(CompletedFetch completedFetch, int maxRecords) {
         // 当前没分配到这个分区，跳过
         if (!subscriptions.isAssigned(completedFetch.partition)) {
             // this can happen when a rebalance happened before fetched records are returned to the consumer's poll call
@@ -753,7 +764,7 @@ public class Fetcher<K, V> implements Closeable {
             // 本次返回的开始offset 与 position上要fetch的offset一样
             if (completedFetch.nextFetchOffset == position.offset) {
                 /**
-                 * 解析多个消息（上限500）
+                 * 获取并解析多个消息（上限500）
                  */
                 List<ConsumerRecord<K, V>> partRecords = completedFetch.fetchRecords(maxRecords);
 
@@ -1274,6 +1285,7 @@ public class Fetcher<K, V> implements Closeable {
 
         long currentTimeMs = time.milliseconds();
 
+        // 目标的所有分区
         for (TopicPartition partition : fetchablePartitions()) {
             FetchPosition position = this.subscriptions.position(partition);
             if (position == null) {
@@ -1291,6 +1303,7 @@ public class Fetcher<K, V> implements Closeable {
             }
 
             // Use the preferred read replica if set, otherwise the position's leader
+            // 获取分区的leader
             Node node = selectReadReplica(partition, leaderOpt.get(), currentTimeMs);
             // 不可请求这个broker
             if (client.isUnavailable(node)) {
@@ -1518,6 +1531,7 @@ public class Fetcher<K, V> implements Closeable {
             byte[] keyByteArray = keyBytes == null ? null : Utils.toArray(keyBytes);
             K key = keyBytes == null ? null : this.keyDeserializer.deserialize(partition.topic(), headers, keyByteArray);
             ByteBuffer valueBytes = record.value();
+            // 消息内存反序列化
             byte[] valueByteArray = valueBytes == null ? null : Utils.toArray(valueBytes);
             V value = valueBytes == null ? null : this.valueDeserializer.deserialize(partition.topic(), headers, valueByteArray);
             return new ConsumerRecord<>(partition.topic(), partition.partition(), offset,
@@ -1675,7 +1689,7 @@ public class Fetcher<K, V> implements Closeable {
                     // 关闭流
                     maybeCloseRecordStream();
 
-                    // batch集合已遍历完or 没有
+                    //当前请求的 batch集合已遍历完or 没有
                     if (!batches.hasNext()) {
                         // Message format v2 preserves the last offset in a batch even if the last record is removed
                         // through compaction. By using the next offset computed from the last offset in the batch,
@@ -1687,6 +1701,7 @@ public class Fetcher<K, V> implements Closeable {
                          * 更新nextFetchOffset 为最后一个batch的LEO
                          */
                         if (currentBatch != null)
+                            // 更新下一次fetch下标
                             nextFetchOffset = currentBatch.nextOffset();
                         drain();
                         return null;

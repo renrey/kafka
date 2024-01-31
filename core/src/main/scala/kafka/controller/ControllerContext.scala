@@ -239,10 +239,12 @@ class ControllerContext {
   }
 
   def isReplicaOnline(brokerId: Int, topicPartition: TopicPartition, includeShuttingDownBrokers: Boolean = false): Boolean = {
+    // 就是判断是否在存活的broker
     val brokerOnline = {
       if (includeShuttingDownBrokers) liveOrShuttingDownBrokerIds.contains(brokerId)
       else liveBrokerIds.contains(brokerId)
     }
+    // broker存活 并且 该broker上该分区不需要下线
     brokerOnline && !replicasOnOfflineDirs.getOrElse(brokerId, Set.empty).contains(topicPartition)
   }
 
@@ -290,6 +292,7 @@ class ControllerContext {
          * 根据分区在broker上是否online，划分2个集合
          */
         val partitionAndReplica = PartitionAndReplica(partition, replica)
+        // 主要还是看broker是否存活
         if (isReplicaOnline(replica, partition))
           onlineReplicas.add(partitionAndReplica)
         else

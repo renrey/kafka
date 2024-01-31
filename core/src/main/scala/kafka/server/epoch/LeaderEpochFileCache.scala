@@ -228,7 +228,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition,
           // This may happen if a bootstrapping follower sends a request with undefined epoch or
           // a follower is on the older message format where leader epochs are not recorded
           (UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
-        // 寻找的epoch是leaderEpoch缓存中最新的一个
+        // 寻找的epoch是本地leaderEpoch缓存中最新的一个
         } else if (latestEpoch.contains(requestedEpoch)) {
           // For the leader, the latest epoch is always the current leader epoch that is still being written to.
           // Followers should not have any reason to query for the end offset of the current epoch, but a consumer
@@ -248,7 +248,7 @@ class LeaderEpochFileCache(topicPartition: TopicPartition,
             // The requested epoch is larger than any known epoch. This case should never be hit because
             // the latest cached epoch is always the largest.
             /**
-             * 这时候目标epoch，比现有的都大
+             * 这时候目标epoch，比本地的都大
              */
             (UNDEFINED_EPOCH, UNDEFINED_EPOCH_OFFSET)
           // 存在

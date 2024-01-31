@@ -70,6 +70,7 @@ public class BufferPool {
     public BufferPool(long memory, int poolableSize, Metrics metrics, Time time, String metricGrpName) {
         this.poolableSize = poolableSize;
         this.lock = new ReentrantLock();
+        // 初始化队列
         this.free = new ArrayDeque<>();
         this.waiters = new ArrayDeque<>();
         this.totalMemory = memory;
@@ -131,6 +132,7 @@ public class BufferPool {
                 return this.free.pollFirst();
             /**
              * 下面就是目标大小超出一块固定的大小 or free池中没有可复用的块
+             * 即未有刚好足够的free复用块
              */
 
             // now check if the request is immediately satisfiable with the
@@ -149,6 +151,9 @@ public class BufferPool {
                 // we have enough unallocated or pooled memory to immediately
                 // satisfy the request, but need to allocate the buffer
                 // 清理free池
+
+                // 如果未被池化的内存< 本次需求的大小，则清理池内的内存，直到达到为止or池无块
+                //
                 freeUp(size);
                 // 划分空间
                 this.nonPooledAvailableMemory -= size;
@@ -208,9 +213,11 @@ public class BufferPool {
                         // otherwise allocate memory
                         /**
                          * 就是batch的使用默认固定大小，且free池有可用，直接取出即可
+                         * accumulated == 0本次操作中第一次拿
                          */
                         if (accumulated == 0 && size == this.poolableSize && !this.free.isEmpty()) {
                             // just grab a buffer from the free list
+                            // 取出free中块，刚好终止这个循环
                             buffer = this.free.pollFirst();
                             accumulated = size;
                         } else {
@@ -222,11 +229,13 @@ public class BufferPool {
                              */
                             // we'll need to allocate memory, but we may only get
                             // part of what we need on this iteration
+                            // 清理还要的空间
                             freeUp(size - accumulated); // 清理
                             /**
                              * 可能本次唤醒可用的空间，不够目标大小，先占当前可用的空间，还要进入下次等待，获取剩余的
                              */
                             int got = (int) Math.min(size - accumulated, this.nonPooledAvailableMemory); //
+                            // 等于预留占用了非池内存的空间
                             this.nonPooledAvailableMemory -= got;
                             accumulated += got;
                         }
@@ -244,7 +253,7 @@ public class BufferPool {
             // over for them
             try {
                 /**
-                 * 等待队列中有线程在等待，并且还有可用空间，可以唤醒等待队列的第一个
+                 * 等待队列中有线程在等待，并且还有可用空间（池有可用块or非池内存>0），可以唤醒等待队列的第一个
                  */
                 if (!(this.nonPooledAvailableMemory == 0 && this.free.isEmpty()) && !this.waiters.isEmpty())
                     this.waiters.peekFirst().signal();
@@ -302,6 +311,7 @@ public class BufferPool {
      */
     private void freeUp(int size) {
         /**
+         * 如果未被池化的内存< 本次需求的大小，则清理池内的内存，直到达到为止or池无块
          * 从free池取出队尾的块，补充到非池可用空间
          * 直到free池没有块了or非池的可用空间>= 目标大小
          */

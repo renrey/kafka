@@ -577,6 +577,7 @@ public class NetworkClient implements KafkaClient {
             return responses;
         }
 
+        // 更新元数据请求
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
             /**
@@ -702,6 +703,7 @@ public class NetworkClient implements KafkaClient {
      */
     @Override
     public Node leastLoadedNode(long now) {
+        // 其实就是手动配置的集群地址
         List<Node> nodes = this.metadataUpdater.fetchNodes();
         if (nodes.isEmpty())
             throw new IllegalStateException("There are no nodes in the Kafka cluster");
@@ -1076,12 +1078,14 @@ public class NetworkClient implements KafkaClient {
 
             // Beware that the behavior of this method and the computation of timeouts for poll() are
             // highly dependent on the behavior of leastLoadedNode.
+            // 选1个目前可用的节点
             Node node = leastLoadedNode(now);
             if (node == null) {
                 log.debug("Give up sending metadata request since no node is available");
                 return reconnectBackoffMs;
             }
 
+            // 对这个broker节点请求获取元数据
             return maybeUpdate(now, node);
         }
 
@@ -1145,6 +1149,7 @@ public class NetworkClient implements KafkaClient {
                 log.trace("Ignoring empty metadata response with correlation id {}.", requestHeader.correlationId());
                 this.metadata.failedUpdate(now);
             } else {
+                // 更新元数据
                 this.metadata.update(inProgress.requestVersion, response, inProgress.isPartialUpdate, now);
             }
 
@@ -1184,6 +1189,7 @@ public class NetworkClient implements KafkaClient {
                 log.debug("Sending metadata request {} to node {}", metadataRequest, node);
                 /**
                  * 发送请求
+                 * @see DefaultMetadataUpdater#handleSuccessfulResponse(RequestHeader, long, MetadataResponse)
                  */
                 sendInternalMetadataRequest(metadataRequest, nodeConnectionId, now);
                 inProgress = new InProgressData(requestAndVersion.requestVersion, requestAndVersion.isPartialUpdate);

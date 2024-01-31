@@ -181,7 +181,9 @@ class KafkaController(val config: KafkaConfig,
         queuedEvent.awaitProcessing()
       }
     })
+
     // 提交事件Startup
+    // 使得eventManager异步进行controller初始化操作，包含z
     eventManager.put(Startup)
     // 启动eventManager
     eventManager.start()
@@ -295,11 +297,13 @@ class KafkaController(val config: KafkaConfig,
      * partitionState: 分区状态，其实就是分区是否可以，有没有leader
      * --- 注意：partitionStateMachine中分区leader的选举！！！！！！
      */
-    replicaStateMachine.startup()
+    replicaStateMachine.startup() // 其实就是同步replica的分区信息给对应broker
     partitionStateMachine.startup()
 
     info(s"Ready to serve as the new controller with epoch $epoch")
 
+
+    // 如果有分区重分配，处理
     initializePartitionReassignments()
     topicDeletionManager.tryTopicDeletion()
     val pendingPreferredReplicaElections = fetchPendingPreferredReplicaElections()
@@ -623,7 +627,9 @@ class KafkaController(val config: KafkaConfig,
       deadBrokers.filter(id => controllerContext.shuttingDownBrokerIds.remove(id))
     if (deadBrokersThatWereShuttingDown.nonEmpty)
       info(s"Removed ${deadBrokersThatWereShuttingDown.mkString(",")} from list of shutting down brokers.")
+   // 获取下线的broker的replica
     val allReplicasOnDeadBrokers = controllerContext.replicasOnBrokers(deadBrokers.toSet)
+    // 下线replica
     onReplicasBecomeOffline(allReplicasOnDeadBrokers)
 
     unregisterBrokerModificationsHandler(deadBrokers)
@@ -654,7 +660,7 @@ class KafkaController(val config: KafkaConfig,
     // trigger OfflinePartition state for all partitions whose current leader is one amongst the newOfflineReplicas
     partitionStateMachine.handleStateChanges(partitionsWithOfflineLeader.toSeq, OfflinePartition)
     // trigger OnlinePartition state changes for offline or new partitions
-    partitionStateMachine.triggerOnlinePartitionStateChange()
+    partitionStateMachine.triggerOnlinePartitionStateChange()//重新更新（选举）下线、new分区
     // trigger OfflineReplica state change for those newly offline replicas
     replicaStateMachine.handleStateChanges(newOfflineReplicasNotForDeletion.toSeq, OfflineReplica)
 
@@ -934,6 +940,7 @@ class KafkaController(val config: KafkaConfig,
   private def initializeControllerContext(): Unit = {
     // update controller cache with delete topic information
     // zk获取所有的broker，epoch是创建znode的czxid
+    // /broker/ids/${id}
     val curBrokerAndEpochs = zkClient.getAllBrokerAndEpochsInCluster
     val (compatibleBrokerAndEpochs, incompatibleBrokerAndEpochs) = partitionOnFeatureCompatibility(curBrokerAndEpochs)
     if (!incompatibleBrokerAndEpochs.isEmpty) {
@@ -1480,6 +1487,7 @@ class KafkaController(val config: KafkaConfig,
      * 2) 发送exist，向zk注册watcher（因为会看zNodeChangeHandlers上这个path的handler），每次getData都会注册watcher
      * 注意：当原有的controller节点掉线后，收到watcher通知后，是执行这个controllerChangeHandler的handleDeletion进行选举
      */
+    // controllerChangeHandler 监听到zk事件变化，会提交到manager处理
     zkClient.registerZNodeChangeHandlerAndCheckExistence(controllerChangeHandler)
 
     /**

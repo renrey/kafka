@@ -346,19 +346,20 @@ class Partition(val topicPartition: TopicPartition,
        */
       val checkpointHighWatermark = offsetCheckpoints.fetch(log.parentDir, topicPartition).getOrElse {
         info(s"No checkpointed highwatermark is found for partition $topicPartition")
+        // 本未有文件记录，返回HW初始化为0
         0L
       }
-      // 更新成功当前分区log的HW
+      // 更新log里的HW（文件有记录则使用，无则初始化为0）
       val initialHighWatermark = log.updateHighWatermark(checkpointHighWatermark)
       info(s"Log loaded for partition $topicPartition with initial high watermark $initialHighWatermark")
     }
 
-    // 更新初始化标志
+    // 更新初始化标志, 在logManager上
     logManager.initializingLog(topicPartition)
     var maybeLog: Option[Log] = None
     try {
       /**
-       * 1.获取log对象，如果没有就创建
+       * 1.从logManager获取log对象，如果没有就创建，缓存在logManager里
        */
       val log = logManager.getOrCreateLog(topicPartition, isNew, isFutureReplica)
       maybeLog = Some(log)
@@ -367,6 +368,7 @@ class Partition(val topicPartition: TopicPartition,
        * 2. 从replication-offset-checkpoint文件读取offset更新成HW
        */
       updateHighWatermark(log)
+      // 返回
       log
     } finally {
       logManager.finishedInitializingLog(topicPartition, maybeLog)
@@ -588,16 +590,19 @@ class Partition(val topicPartition: TopicPartition,
 
       /**
        * 1) 保存ISR、分配列表等信息缓存到本地分区对象
+       *
+       *  newRemoteReplicas 放入这个分区其他broker的replica（远程）
        */
       updateAssignmentAndIsr(
-        assignment = partitionState.replicas.asScala.map(_.toInt),
+        assignment = partitionState.replicas.asScala.map(_.toInt),// 分区的分配
         isr = isr,
         addingReplicas = addingReplicas,
         removingReplicas = removingReplicas
       )
       try {
         /**
-         * 2)创建分区的log对象:
+         * 创建log并设置到partition上
+         * 2)创建分区的log对象（代表这个replica的磁盘文件（聚合）对象）:
          *  1. 加载所有logSegment
          *  2. 读取最后一条消息的LEO
          *  3. 读取replication-offset-checkpoint作为HW
@@ -692,6 +697,8 @@ class Partition(val topicPartition: TopicPartition,
      */
     if (leaderHWIncremented)
       tryCompleteDelayedRequests()
+
+    // 返回结果
     isNewLeader
   }
 
@@ -844,7 +851,7 @@ class Partition(val topicPartition: TopicPartition,
                              isr: Set[Int],
                              addingReplicas: Seq[Int],
                              removingReplicas: Seq[Int]): Unit = {
-    val newRemoteReplicas = assignment.filter(_ != localBrokerId)
+    val newRemoteReplicas = assignment.filter(_ != localBrokerId)// 只保存分区其他replica（不包含自己）
     val removedReplicas = remoteReplicasMap.keys.filter(!newRemoteReplicas.contains(_))
 
     // due to code paths accessing remoteReplicasMap without a lock,
@@ -853,6 +860,7 @@ class Partition(val topicPartition: TopicPartition,
      * 把newRemoteReplicas加入到remoteReplicasMap
      * 把removedReplicas从remoteReplicasMap删除
      */
+    // remoteReplicasMap : 保存这个分区的其他 非本节点的replica
     newRemoteReplicas.foreach(id => remoteReplicasMap.getAndMaybePut(id, new Replica(id, topicPartition)))
     remoteReplicasMap.removeAll(removedReplicas)
 
@@ -860,6 +868,7 @@ class Partition(val topicPartition: TopicPartition,
       assignmentState = OngoingReassignmentState(addingReplicas, removingReplicas, assignment)
     else
       assignmentState = SimpleAssignmentState(assignment)
+   // 使用  CommittedIsr 保存ISR
     isrState = CommittedIsr(isr)
   }
 
@@ -1010,7 +1019,7 @@ class Partition(val topicPartition: TopicPartition,
       // Note here we are using the "maximal", see explanation above
       /**
        * 条件：
-       * 1. follower的LEO < leader的LEO
+       * 1. follower的LEO < leader的LEO(其实找到最小的leo)
        * 2. 其实就是这个broker可以作为isr
        * （1）follower最近一次使用offset>=leader LEO作为参数的fetch请求时间 没超过 replicaLagTimeMaxMs ,
        *     代表这个follower还在同步范围内，也就是可以作为ISR

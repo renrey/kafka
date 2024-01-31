@@ -259,6 +259,7 @@ abstract class AbstractFetcherThread(name: String,
         // 请求时本地的epoch
         val leaderEpochInRequest = partitionEpochRequest.currentLeaderEpoch
         // 判断是否分区又重新选举了
+          // 过滤
         curPartitionState != null && leaderEpochInRequest == curPartitionState.currentLeaderEpoch
       }
 
@@ -723,6 +724,7 @@ abstract class AbstractFetcherThread(name: String,
       endOffsetForEpoch(tp, leaderEpochOffset.leaderEpoch) match {
         // 找到了
         case Some(OffsetAndEpoch(followerEndOffset, followerEpoch)) =>
+          // 计算拿到的本地epoch不是远程leader的
           if (followerEpoch != leaderEpochOffset.leaderEpoch) {
             // the follower does not know about the epoch that leader replied with
             // we truncate to the end offset of the largest epoch that is smaller than the
@@ -765,6 +767,8 @@ abstract class AbstractFetcherThread(name: String,
           /**
            * 如上面的follower找到的epoch与 leader 返回的epoch不一致, 就是直接没找到小于等于leader返回epoch
            * 截取到leader返回的LEO、当前LEO的最小值
+           *
+           * LEO即不用截取
            */
           OffsetTruncationState(min(leaderEpochOffset.endOffset, replicaEndOffset), truncationCompleted = true)
       }

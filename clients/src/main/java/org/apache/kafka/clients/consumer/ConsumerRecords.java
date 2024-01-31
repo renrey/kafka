@@ -77,6 +77,7 @@ public class ConsumerRecords<K, V> implements Iterable<ConsumerRecord<K, V>> {
 
     @Override
     public Iterator<ConsumerRecord<K, V>> iterator() {
+        // 实在遍历mapkey再遍历里面value
         return new ConcatenatedIterable<>(records.values()).iterator();
     }
 

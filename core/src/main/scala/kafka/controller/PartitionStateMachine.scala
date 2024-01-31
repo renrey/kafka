@@ -37,7 +37,7 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
    */
   def startup(): Unit = {
     info("Initializing partition state")
-    // 更新每个分区的状态
+    // 更新每个分区的状态（leader）
     initializePartitionState()
     info("Triggering online partition state changes")
     // 尝试给NEW、OFFLINE的分区，选出新的leader
@@ -95,6 +95,7 @@ abstract class PartitionStateMachine(controllerContext: ControllerContext) exten
       controllerContext.partitionLeadershipInfo(topicPartition) match {
         case Some(currentLeaderIsrAndEpoch) =>
           // else, check if the leader for partition is alive. If yes, it is in Online state, else it is in Offline state
+          // 也是主看broker是否存活（zk上）
           if (controllerContext.isReplicaOnline(currentLeaderIsrAndEpoch.leaderAndIsr.leader, topicPartition))
           // leader is alive
             controllerContext.putPartitionState(topicPartition, OnlinePartition)
@@ -170,6 +171,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
           targetState,
           partitionLeaderElectionStrategyOpt
         )
+        // 新的分区信息
         controllerBrokerRequestBatch.sendRequestsToBrokers(controllerContext.epoch)
         result
       } catch {
@@ -279,11 +281,12 @@ class ZkPartitionStateMachine(config: KafkaConfig,
         } else {
           Map.empty
         }
+        // 下线
       case OfflinePartition | NonExistentPartition =>
         validPartitions.foreach { partition =>
           if (traceEnabled)
             stateChangeLog.trace(s"Changed partition $partition state from ${partitionState(partition)} to $targetState")
-          controllerContext.putPartitionState(partition, targetState)
+          controllerContext.putPartitionState(partition, targetState)//更新下线状态
         }
         Map.empty
     }
@@ -296,7 +299,7 @@ class ZkPartitionStateMachine(config: KafkaConfig,
    */
   private def initializeLeaderAndIsrForPartitions(partitions: Seq[TopicPartition]): Seq[TopicPartition] = {
     val successfulInitializations = mutable.Buffer.empty[TopicPartition]
-    // 获取每个分区对应的分配内容
+    // 获取每个分区对应的分配内容(zk上保存，但不是每次从zk而且是本地内存)
     val replicasPerPartition = partitions.map(partition => partition -> controllerContext.partitionReplicaAssignment(partition))
     // 把每个partition分配内容中下线的broker去除，留下上线的
     val liveReplicasPerPartition = replicasPerPartition.map { case (partition, replicas) =>

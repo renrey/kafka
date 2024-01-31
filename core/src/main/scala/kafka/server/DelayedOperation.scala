@@ -189,7 +189,9 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
   newGauge("NumDelayedOperations", () => numDelayed, metricsTags)
 
   /**
+   * 后台线程
    * 启动过期任务
+   *
    */
   if (reaperEnabled)
     expirationReaper.start()
@@ -268,12 +270,15 @@ final class DelayedOperationPurgatory[T <: DelayedOperation](purgatoryName: Stri
    * @return the number of completed operations during this process
    */
   def checkAndComplete(key: Any): Int = {
+    // 512个其中一格
     val wl = watcherList(key)
+    // 锁当前格
     val watchers = inLock(wl.watchersLock) { wl.watchersByKey.get(key) }
+    // 查看有无watcher
     val numCompleted = if (watchers == null)
       0
     else
-      watchers.tryCompleteWatched()
+      watchers.tryCompleteWatched()// 执行watcher
     debug(s"Request key $key unblocked $numCompleted $purgatoryName operations")
     numCompleted
   }

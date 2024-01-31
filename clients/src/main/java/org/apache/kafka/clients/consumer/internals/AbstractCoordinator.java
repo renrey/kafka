@@ -255,6 +255,7 @@ public abstract class AbstractCoordinator implements Closeable {
             // 回调
             final RequestFuture<Void> future = lookupCoordinator();
             // 执行网络事件：包括建立连接、获取元数据、发送这个FindCoordinator请求
+            // 等待请求收到响应（但不是在这里同步处理响应）
             client.poll(future, timer);
 
             if (!future.isDone()) {
@@ -298,6 +299,7 @@ public abstract class AbstractCoordinator implements Closeable {
             } else {
                 /**
                  * 生成FindCoordinator请求，回调逻辑：FindCoordinatorResponseHandler
+                 * @see FindCoordinatorResponseHandler#onSuccess(ClientResponse, RequestFuture)
                  */
                 findCoordinatorFuture = sendFindCoordinatorRequest(node);
             }
@@ -540,6 +542,7 @@ public abstract class AbstractCoordinator implements Closeable {
         if (joinFuture == null) {
             /**
              * 状态:PREPARING_REBALANCE
+             * 准备rebalance
              */
             state = MemberState.PREPARING_REBALANCE;
             // a rebalance can be triggered consecutively if the previous one failed,
@@ -549,6 +552,7 @@ public abstract class AbstractCoordinator implements Closeable {
             /**
              * 生成请求
              * 回调：JoinGroupResponseHandler、下面的重写回调（用来记录错误）
+             * @see JoinGroupResponseHandler#handle(JoinGroupResponse, RequestFuture)
              */
             joinFuture = sendJoinGroupRequest();
             joinFuture.addListener(new RequestFutureListener<ByteBuffer>() {
@@ -631,7 +635,7 @@ public abstract class AbstractCoordinator implements Closeable {
                             future.raise(new UnjoinedGroupException());
                         } else {
                             /**
-                             * 成功，状态:COMPLETING_REBALANCE 完成REBALANCE
+                             * 成功，状态:COMPLETING_REBALANCE 正在进行REBALANCE
                              */
                             state = MemberState.COMPLETING_REBALANCE;
 
@@ -641,7 +645,7 @@ public abstract class AbstractCoordinator implements Closeable {
                                 heartbeatThread.enable();
                             /**
                              * 1. 更新generation缓存
-                             * generationId、memberId、protocolName
+                             * generationId、memberId（重要！！！自己id）、protocolName
                              */
                             AbstractCoordinator.this.generation = new Generation(
                                 joinResponse.data().generationId(),
@@ -944,6 +948,7 @@ public abstract class AbstractCoordinator implements Closeable {
                      * 对coordinator发起连接
                      */
                     client.tryConnect(coordinator);
+                    // 更新心跳时间
                     heartbeat.resetSessionTimeout();
                 }
                 future.complete(null);

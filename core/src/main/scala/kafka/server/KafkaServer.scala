@@ -255,10 +255,13 @@ class KafkaServer(
           kafkaScheduler, time, brokerTopicStats, logDirFailureChannel, config.usesTopicId)
         // 状态：RECOVERY
         brokerState.set(BrokerState.RECOVERY)
-        // 1. 先从/broker/topics 的子节点，获取所有topic名称
+        // 1. 先从/broker/topics 的子节点，获取所有已分配分区的topic名称
         // 2. 执行启动
         logManager.startup(zkClient.getAllTopicsInCluster())
 
+        /**
+         * 元数据
+         */
         metadataCache = MetadataCache.zkMetadataCache(config.brokerId)
         // Enable delegation token cache for all SCRAM mechanisms to simplify dynamic update.
         // This keeps the cache up-to-date if new SCRAM mechanisms are enabled dynamically.
@@ -392,6 +395,7 @@ class KafkaServer(
             }.toMap
         }
 
+        // follwer相关
         val fetchManager = new FetchManager(Time.SYSTEM,
           new FetchSessionCache(config.maxIncrementalFetchSessionCacheSlots,
             KafkaServer.MIN_INCREMENTAL_FETCH_SESSION_EVICTION_MS))
